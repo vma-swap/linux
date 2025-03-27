@@ -34,6 +34,9 @@
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
+#define TRACE_INCLUDE_PATH ../../include/trace
+#define TRACE_INCLUDE_FILE events/swap
+#include <trace/events/swap.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
 static bool	swap_slot_cache_active;
@@ -241,6 +244,7 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 		cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE,
 					   cache->slots, 0);
 
+	trace_refill_swap_slots_cache(cache->slots, cache->nr);
 	return cache->nr;
 }
 
@@ -274,6 +278,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 repeat:
 			if (cache->nr) {
 				entry = cache->slots[cache->cur];
+				trace_swap_entry_alloc_from_cache(entry,cache->slots,cache->cur,cache->nr);
 				cache->slots[cache->cur++].val = 0;
 				cache->nr--;
 			} else if (refill_swap_slots_cache(cache)) {

@@ -5104,7 +5104,6 @@ bool mem_cgroup_swap_full(struct folio *folio)
 	struct mem_cgroup *memcg;
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
-
 	if (vm_swap_full())
 		return true;
 	if (do_memsw_account())
@@ -5117,6 +5116,7 @@ bool mem_cgroup_swap_full(struct folio *folio)
 	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
 		unsigned long usage = page_counter_read(&memcg->swap);
 
+		trace_mem_cgroup_swap_full(vm_swap_full(),usage,memcg->swap.high,memcg->swap.max);
 		if (usage * 2 >= READ_ONCE(memcg->swap.high) ||
 		    usage * 2 >= READ_ONCE(memcg->swap.max))
 			return true;

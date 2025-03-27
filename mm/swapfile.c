@@ -43,6 +43,7 @@
 #include <linux/suspend.h>
 #include <linux/zswap.h>
 #include <linux/plist.h>
+#include <trace/events/swap.h>
 
 #include <asm/tlbflush.h>
 #include <linux/swapops.h>
@@ -905,8 +906,9 @@ static unsigned long cluster_alloc_swap_entry(struct swap_info_struct *si, int o
 		} else {
 			unlock_cluster(ci);
 		}
-		if (found)
-			goto done;
+		if (found){
+			trace_swap_cluster_alloc_current_cluster(si, ci, offset);
+			goto done;}
 	}
 
 new_cluster:
@@ -914,8 +916,9 @@ new_cluster:
 	if (ci) {
 		found = alloc_swap_scan_cluster(si, ci, cluster_offset(si, ci),
 						order, usage);
-		if (found)
-			goto done;
+		if (found){
+			trace_swap_cluster_alloc_new_cluster(si, ci, cluster_offset(si, ci));
+			goto done;}
 	}
 
 	/* Try reclaim from full clusters if free clusters list is drained */
@@ -928,8 +931,9 @@ new_cluster:
 		while ((ci = isolate_lock_cluster(si, &si->nonfull_clusters[order]))) {
 			found = alloc_swap_scan_cluster(si, ci, cluster_offset(si, ci),
 							order, usage);
-			if (found)
-				goto done;
+			if (found){
+				trace_swap_cluster_alloc_nonfull_cluster(si, ci, cluster_offset(si, ci));
+				goto done;}
 			/* Clusters failed to allocate are moved to frag_clusters */
 			frags++;
 		}
@@ -946,8 +950,9 @@ new_cluster:
 			 */
 			found = alloc_swap_scan_cluster(si, ci, cluster_offset(si, ci),
 							order, usage);
-			if (found)
-				goto done;
+			if (found){
+				trace_swap_cluster_alloc_frag_cluster(si, ci, cluster_offset(si, ci));
+				goto done;}
 			frags++;
 		}
 	}
@@ -1121,6 +1126,7 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 {
 	unsigned long begin = offset;
 	unsigned long end = offset + nr_entries - 1;
+	trace_swap_range_free(si, offset, end);
 	void (*swap_slot_free_notify)(struct block_device *, unsigned long);
 	unsigned int i;
 
@@ -1511,10 +1517,14 @@ static void swap_entry_range_free(struct swap_info_struct *si,
 	mem_cgroup_uncharge_swap(entry, nr_pages);
 	swap_range_free(si, offset, nr_pages);
 
-	if (!ci->count)
+	if (!ci->count){
+		trace_swap_free_cluster(si, ci, cluster_offset(si, ci));
 		free_cluster(si, ci);
-	else
+		}
+	else {
+		trace_swap_partial_free_cluster(si, ci,cluster_offset(si, ci));
 		partial_free_cluster(si, ci);
+}
 }
 
 static void cluster_swap_free_nr(struct swap_info_struct *si,
@@ -2897,6 +2907,90 @@ static int swap_show(struct seq_file *swap, void *v)
 			bytes, bytes < 10000000 ? "\t" : "",
 			inuse, inuse < 10000000 ? "\t" : "",
 			si->prio);
+	// print si-flags
+	seq_puts(swap,"flags:\n");
+	for (int i = 0; i < 13; i++) {
+		bool value = (si->flags & (1 << i));
+		switch(i){
+		case(0):
+			seq_printf(swap,"SWP_USED: %d\n",value);
+			break;
+		case(1):
+			seq_printf(swap,"SWP_WRITEOK: %d\n",value);
+			break;
+		case(2):
+			seq_printf(swap,"SWP_DISCARDABLE: %d\n",value);
+			break;
+		case(3):
+			seq_printf(swap,"SWP_DISCARDING: %d\n",value);
+			break;
+		case(4):
+			seq_printf(swap,"SWP_SOLIDSTATE: %d\n",value);
+			break;
+		case(5):
+			seq_printf(swap,"SWP_CONTINUED: %d\n",value);
+			break;
+		case(6):	
+			seq_printf(swap,"SWP_BLKDEV: %d\n",value);
+			break;
+		case(7):
+			seq_printf(swap,"SWP_ACTIVATED: %d\n",value);
+			break;
+		case(8):
+			seq_printf(swap,"SWP_FS_OPS: %d\n",value);
+			break;
+		case(9):
+			seq_printf(swap,"SWP_AREA_DISCARD: %d\n",value);
+			break;
+		case(10):
+			seq_printf(swap,"SWP_PAGE_DISCARD: %d\n",value);
+			break;
+		case(11):
+			seq_printf(swap,"SWP_STABLE_WRITES: %d\n",value);
+			break;
+		case(12):
+			seq_printf(swap,"SWP_SYNCHRONOUS_IO: %d\n",value);
+			break;
+		default:
+			seq_printf(swap,"SWP_UNKNOWN: %d\n",value);
+			break;
+		}}
+		seq_printf(swap,"CLUSTER_FLAG_NONE=%d",CLUSTER_FLAG_NONE);
+		seq_printf(swap," CLUSTER_FLAG_FREE=%d",CLUSTER_FLAG_FREE);
+		seq_printf(swap," CLUSTER_FLAG_NONFULL=%d",CLUSTER_FLAG_NONFULL);
+		seq_printf(swap," CLUSTER_FLAG_FRAG=%d",CLUSTER_FLAG_FRAG);
+		seq_printf(swap," CLUSTER_FLAG_USABLE=%d",CLUSTER_FLAG_USABLE);
+		seq_printf(swap," CLUSTER_FLAG_FULL=%d",CLUSTER_FLAG_FULL);
+		seq_printf(swap," CLUSTER_FLAG_DISCARD=%d",CLUSTER_FLAG_DISCARD);
+		seq_printf(swap," CLUSTER_FLAG_MAX=%d\n",CLUSTER_FLAG_MAX);
+
+		for (int row = 0; row < 2048; row++) {
+			for (int col = 0; col < 32; col++) {
+				int idx = (row * 32 + col);
+				seq_printf(swap,"%d:c%d:f%d",idx,si->cluster_info[idx].count,si->cluster_info[idx].flags);
+				if (si->cluster_info[idx].count != 0){
+					for (int i = 0; i < 512; i++){
+						seq_puts(swap,":");
+						seq_printf(swap,"%x",si->swap_map[idx*512+i]);
+					}
+				}
+				seq_puts(swap," ");
+			}
+			seq_puts(swap,"\n");
+		}
+	// for (int offset = 0; offset < (si->pages); offset++) {
+	// 	ci = lock_cluster(si, offset);
+	// 	printk("clusters[%d]: count=%d flag=%d\n",offset/512,ci->count,ci->flags);
+	// 	unlock_cluster(ci);
+	// }
+
+	// seq_printf(swap,"len of the map: %d\n", si->max);
+	// print every entry in the swap_map in hex
+	// for (int i = 0; i < si->max; i++) {
+	// 	seq_printf("%x:", i, si->swap_map[i]);
+	// 	if ((i+1)%1048576==0)
+	// 		seq_puts(swap,"\n");
+	// }
 	return 0;
 }
 
@@ -3233,6 +3327,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 	 * Reduce false cache line sharing between cluster_info and
 	 * sharing same address space.
 	 */
+	trace_init_swap_cluster(nr_clusters,SWAP_CLUSTER_COLS,DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS));
 	for (k = 0; k < SWAP_CLUSTER_COLS; k++) {
 		j = k % SWAP_CLUSTER_COLS;
 		for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) {
@@ -3247,6 +3342,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 				continue;
 			}
 			ci->flags = CLUSTER_FLAG_FREE;
+			trace_init_swap_cluster_add_to_free(k, i, cluster_offset(si, ci));
 			list_add_tail(&ci->list, &si->free_clusters);
 		}
 	}

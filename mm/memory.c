@@ -79,6 +79,7 @@
 #include <linux/fsnotify.h>
 
 #include <trace/events/kmem.h>
+#include <trace/events/swap.h>
 
 #include <asm/io.h>
 #include <asm/mmu_context.h>
@@ -4015,6 +4016,10 @@ static inline bool should_try_to_free_swap(struct folio *folio,
 					   struct vm_area_struct *vma,
 					   unsigned int fault_flags)
 {
+	trace_should_try_to_free_swap(!folio_test_swapcache(folio), mem_cgroup_swap_full(folio),
+				      vma->vm_flags & VM_LOCKED, folio_test_mlocked(folio),
+				      fault_flags & FAULT_FLAG_WRITE, !folio_test_ksm(folio),
+				      folio_ref_count(folio) == (1 + folio_nr_pages(folio)));
 	if (!folio_test_swapcache(folio))
 		return false;
 	if (mem_cgroup_swap_full(folio) || (vma->vm_flags & VM_LOCKED) ||
