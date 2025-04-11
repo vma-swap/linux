@@ -44,6 +44,7 @@
 #include <linux/zswap.h>
 #include <linux/plist.h>
 #include <trace/events/swap.h>
+#include <linux/rmap.h>
 
 #include <asm/tlbflush.h>
 #include <linux/swapops.h>
@@ -63,6 +64,8 @@ static bool folio_swapcache_freeable(struct folio *folio);
 static struct swap_cluster_info *lock_cluster(struct swap_info_struct *si,
 					      unsigned long offset);
 static inline void unlock_cluster(struct swap_cluster_info *ci);
+int kernel_swapon(char* specialfile, int swap_flags,struct swap_info_struct *si);
+
 
 static DEFINE_SPINLOCK(swap_lock);
 static unsigned int nr_swapfiles;
@@ -129,7 +132,9 @@ static inline unsigned char swap_count(unsigned char ent)
 {
 	return ent & ~SWAP_HAS_CACHE;	/* may include COUNT_CONTINUED flag */
 }
-
+#ifdef CONFIG_VMA_SWAP
+#define VMA_SWAPFILE_SIZE 5*(1<<30) /* 5GB */
+#endif
 /*
  * Use the second highest bit of inuse_pages counter as the indicator
  * if one swap device is on the available plist, so the atomic can
@@ -1232,11 +1237,104 @@ static bool get_swap_device_info(struct swap_info_struct *si)
 	return true;
 }
 
+//fallocate we will create a file time size of 5GiB
+int *vma_alloc_swap_info(struct swap_info_struct* si)
+{
+	struct file *file;
+    int ret;
+	char* base_path= "/scratch/vma_swaps";
+	//use the current time to create a unique file name
+	char path[256];
+	time_t t = time(NULL);
+	struct tm tm = *localtime(&t);
+	sprintf(path, "%s/vma_swap_%d-%02d-%02d_%02d:%02d:%02d.swap", base_path, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    printk(KERN_INFO "Creating swap file at %s\n", path);
+    file = filp_open(path, O_CREAT | O_WRONLY | O_LARGEFILE, 0600);
+
+    ret = vfs_fallocate(file, FALLOC_FL_KEEP_SIZE, 0, VMA_SWAPFILE_SIZE);
+    
+    filp_close(file, NULL);
+	//now call the mkswap utilty
+	char *argv[] = {"/sbin/mkswap", path, NULL};
+	char *envp[] = {"PATH=/sbin:/usr/sbin", NULL};
+	int pid = kernel_thread((void *)call_usermodehelper, argv, CLONE_VM | SIGCHLD);
+	if (pid < 0) {
+		printk(KERN_ERR "Failed to create mkswap process\n");
+		return NULL;
+	}
+	wait_for_completion(&pid->completion);
+	//check the return value of call_usermodehelper
+	int ret = pid->exit_code;
+	if (ret != 0) {
+		printk(KERN_ERR "mkswap failed with error code %d\n", ret);
+		return NULL;
+	}
+	printk(KERN_INFO "mkswap completed successfully\n");
+	//now call swapon on the file using internal kernel function
+	return kernel_swapon(path, 0);
+
+}
+static bool vma_swap_info(struct folio *folio, struct vm_area_struct *vma,
+		     unsigned long address, void *arg)
+{
+	struct vma_rmap_data *rmap_data = arg;
+	if(!vma->si){
+		if(!rmap_data->allocate){
+			return true;
+		}
+		int ret_val = vma_alloc_swap_info(vma->si);
+		if (ret_val < 0) {
+			printk(KERN_ERR "Failed to allocate swap info\n");
+			return true;
+		}
+		printk(KERN_INFO "Allocated swap info successfully\n");
+		rmap_data->si = vma->si;
+	}
+	return false;
+}
+
+struct swap_info_struct *folio_swap_info(struct folio *folio)
+{
+	struct vma_rmap_data data = {
+		.allocate = false,
+		.si = NULL,
+	};
+
+	enum ttu_flags flags = TTU_BATCH_FLUSH;
+	struct rmap_walk_control rwc = {
+		.rmap_one = vma_swap_info,
+		.arg = &data,
+		.done = NULL,
+		.anon_lock = folio_lock_anon_vma_read,
+	};
+	if (flags & TTU_RMAP_LOCKED)
+		rmap_walk_locked(folio, &rwc);
+	else
+		rmap_walk(folio, &rwc);
+	if(!(data.entry->val))
+	{
+		data.allocate = true;
+		if (flags & TTU_RMAP_LOCKED)
+			rmap_walk_locked(folio, &rwc);
+		else
+			rmap_walk(folio, &rwc);
+
+	}
+	printk(KERN_INFO "vma_swap_info: %s\n", data.si ? "true" : "false");
+	return data.si;
+}
+
+#ifdef CONFIG_SWAP_VMA
+int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
+{
+	struct swap_info_struct *si = folio_swap_info(folio);
+#else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 {
+	struct swap_info_struct *si, *next;
+#endif
 	int order = swap_entry_order(entry_order);
 	unsigned long size = 1 << order;
-	struct swap_info_struct *si, *next;
 	long avail_pgs;
 	int n_ret = 0;
 	int node;
@@ -1255,6 +1353,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 
 start_over:
 	node = numa_node_id();
+	#ifndef CONFIG_SWAP_VMA
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
@@ -1282,6 +1381,33 @@ start_over:
 		if (plist_node_empty(&next->avail_lists[node]))
 			goto start_over;
 	}
+	#else
+	plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
+	spin_unlock(&swap_avail_lock);
+	if (get_swap_device_info(si)) {
+		n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
+				n_goal, swp_entries, order);
+		put_swap_device(si);
+		if (n_ret || size > 1)
+			goto check_out;
+	}
+
+	spin_lock(&swap_avail_lock);
+	/*
+		* if we got here, it's likely that si was almost full before,
+		* and since scan_swap_map_slots() can drop the si->lock,
+		* multiple callers probably all tried to get a page from the
+		* same si and it filled up before we could get one; or, the si
+		* filled up between us dropping swap_avail_lock and taking
+		* si->lock. Since we dropped the swap_avail_lock, the
+		* swap_avail_head list may have been modified; so if next is
+		* still in the swap_avail_head list then try it, otherwise
+		* start over if we have not gotten any slots.
+		*/
+	if (plist_node_empty(&next->avail_lists[node]))
+		goto start_over;
+	#endif
+
 
 	spin_unlock(&swap_avail_lock);
 
@@ -2959,29 +3085,29 @@ static int swap_show(struct seq_file *swap, void *v)
 			seq_printf(swap,"SWP_UNKNOWN: %d\n",value);
 			break;
 		}}
-		seq_printf(swap,"CLUSTER_FLAG_NONE=%d",CLUSTER_FLAG_NONE);
-		seq_printf(swap," CLUSTER_FLAG_FREE=%d",CLUSTER_FLAG_FREE);
-		seq_printf(swap," CLUSTER_FLAG_NONFULL=%d",CLUSTER_FLAG_NONFULL);
-		seq_printf(swap," CLUSTER_FLAG_FRAG=%d",CLUSTER_FLAG_FRAG);
-		seq_printf(swap," CLUSTER_FLAG_USABLE=%d",CLUSTER_FLAG_USABLE);
-		seq_printf(swap," CLUSTER_FLAG_FULL=%d",CLUSTER_FLAG_FULL);
-		seq_printf(swap," CLUSTER_FLAG_DISCARD=%d",CLUSTER_FLAG_DISCARD);
-		seq_printf(swap," CLUSTER_FLAG_MAX=%d\n",CLUSTER_FLAG_MAX);
+		// seq_printf(swap,"CLUSTER_FLAG_NONE=%d",CLUSTER_FLAG_NONE);
+		// seq_printf(swap," CLUSTER_FLAG_FREE=%d",CLUSTER_FLAG_FREE);
+		// seq_printf(swap," CLUSTER_FLAG_NONFULL=%d",CLUSTER_FLAG_NONFULL);
+		// seq_printf(swap," CLUSTER_FLAG_FRAG=%d",CLUSTER_FLAG_FRAG);
+		// seq_printf(swap," CLUSTER_FLAG_USABLE=%d",CLUSTER_FLAG_USABLE);
+		// seq_printf(swap," CLUSTER_FLAG_FULL=%d",CLUSTER_FLAG_FULL);
+		// seq_printf(swap," CLUSTER_FLAG_DISCARD=%d",CLUSTER_FLAG_DISCARD);
+		// seq_printf(swap," CLUSTER_FLAG_MAX=%d\n",CLUSTER_FLAG_MAX);
 
-		for (int row = 0; row < 2048; row++) {
-			for (int col = 0; col < 32; col++) {
-				int idx = (row * 32 + col);
-				seq_printf(swap,"%d:c%d:f%d",idx,si->cluster_info[idx].count,si->cluster_info[idx].flags);
-				if (si->cluster_info[idx].count != 0){
-					for (int i = 0; i < 512; i++){
-						seq_puts(swap,":");
-						seq_printf(swap,"%x",si->swap_map[idx*512+i]);
-					}
-				}
-				seq_puts(swap," ");
-			}
-			seq_puts(swap,"\n");
-		}
+		// for (int row = 0; row < 2048; row++) {
+		// 	for (int col = 0; col < 32; col++) {
+		// 		int idx = (row * 32 + col);
+		// 		seq_printf(swap,"%d:c%d:f%d",idx,si->cluster_info[idx].count,si->cluster_info[idx].flags);
+		// 		if (si->cluster_info[idx].count != 0){
+		// 			for (int i = 0; i < 512; i++){
+		// 				seq_puts(swap,":");
+		// 				seq_printf(swap,"%x",si->swap_map[idx*512+i]);
+		// 			}
+		// 		}
+		// 		seq_puts(swap," ");
+		// 	}
+		// 	seq_puts(swap,"\n");
+		// }
 	// for (int offset = 0; offset < (si->pages); offset++) {
 	// 	ci = lock_cluster(si, offset);
 	// 	printk("clusters[%d]: count=%d flag=%d\n",offset/512,ci->count,ci->flags);
@@ -3385,6 +3511,253 @@ err:
 SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 {
 	struct swap_info_struct *si;
+	struct filename *name;
+	struct file *swap_file = NULL;
+	struct address_space *mapping;
+	struct dentry *dentry;
+	int prio;
+	int error;
+	union swap_header *swap_header;
+	int nr_extents;
+	sector_t span;
+	unsigned long maxpages;
+	unsigned char *swap_map = NULL;
+	unsigned long *zeromap = NULL;
+	struct swap_cluster_info *cluster_info = NULL;
+	struct folio *folio = NULL;
+	struct inode *inode = NULL;
+	bool inced_nr_rotate_swap = false;
+
+	if (swap_flags & ~SWAP_FLAGS_VALID)
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (!swap_avail_heads)
+		return -ENOMEM;
+
+	si = alloc_swap_info();
+	if (IS_ERR(si))
+		return PTR_ERR(si);
+
+	INIT_WORK(&si->discard_work, swap_discard_work);
+	INIT_WORK(&si->reclaim_work, swap_reclaim_work);
+
+	name = getname(specialfile);
+	if (IS_ERR(name)) {
+		error = PTR_ERR(name);
+		name = NULL;
+		goto bad_swap;
+	}
+	swap_file = file_open_name(name, O_RDWR | O_LARGEFILE | O_EXCL, 0);
+	if (IS_ERR(swap_file)) {
+		error = PTR_ERR(swap_file);
+		swap_file = NULL;
+		goto bad_swap;
+	}
+
+	si->swap_file = swap_file;
+	mapping = swap_file->f_mapping;
+	dentry = swap_file->f_path.dentry;
+	inode = mapping->host;
+
+	error = claim_swapfile(si, inode);
+	if (unlikely(error))
+		goto bad_swap;
+
+	inode_lock(inode);
+	if (d_unlinked(dentry) || cant_mount(dentry)) {
+		error = -ENOENT;
+		goto bad_swap_unlock_inode;
+	}
+	if (IS_SWAPFILE(inode)) {
+		error = -EBUSY;
+		goto bad_swap_unlock_inode;
+	}
+
+	/*
+	 * Read the swap header.
+	 */
+	if (!mapping->a_ops->read_folio) {
+		error = -EINVAL;
+		goto bad_swap_unlock_inode;
+	}
+	folio = read_mapping_folio(mapping, 0, swap_file);
+	if (IS_ERR(folio)) {
+		error = PTR_ERR(folio);
+		goto bad_swap_unlock_inode;
+	}
+	swap_header = kmap_local_folio(folio, 0);
+
+	maxpages = read_swap_header(si, swap_header, inode);
+	if (unlikely(!maxpages)) {
+		error = -EINVAL;
+		goto bad_swap_unlock_inode;
+	}
+
+	/* OK, set up the swap map and apply the bad block list */
+	swap_map = vzalloc(maxpages);
+	if (!swap_map) {
+		error = -ENOMEM;
+		goto bad_swap_unlock_inode;
+	}
+
+	error = swap_cgroup_swapon(si->type, maxpages);
+	if (error)
+		goto bad_swap_unlock_inode;
+
+	nr_extents = setup_swap_map_and_extents(si, swap_header, swap_map,
+						maxpages, &span);
+	if (unlikely(nr_extents < 0)) {
+		error = nr_extents;
+		goto bad_swap_unlock_inode;
+	}
+
+	/*
+	 * Use kvmalloc_array instead of bitmap_zalloc as the allocation order might
+	 * be above MAX_PAGE_ORDER incase of a large swap file.
+	 */
+	zeromap = kvmalloc_array(BITS_TO_LONGS(maxpages), sizeof(long),
+				    GFP_KERNEL | __GFP_ZERO);
+	if (!zeromap) {
+		error = -ENOMEM;
+		goto bad_swap_unlock_inode;
+	}
+
+	if (si->bdev && bdev_stable_writes(si->bdev))
+		si->flags |= SWP_STABLE_WRITES;
+
+	if (si->bdev && bdev_synchronous(si->bdev))
+		si->flags |= SWP_SYNCHRONOUS_IO;
+
+	if (si->bdev && bdev_nonrot(si->bdev)) {
+		si->flags |= SWP_SOLIDSTATE;
+	} else {
+		atomic_inc(&nr_rotate_swap);
+		inced_nr_rotate_swap = true;
+	}
+
+	cluster_info = setup_clusters(si, swap_header, maxpages);
+	if (IS_ERR(cluster_info)) {
+		error = PTR_ERR(cluster_info);
+		cluster_info = NULL;
+		goto bad_swap_unlock_inode;
+	}
+	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
+		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
+		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
+	}
+	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
+	if ((swap_flags & SWAP_FLAG_DISCARD) &&
+	    si->bdev && bdev_max_discard_sectors(si->bdev)) {
+		/*
+		 * When discard is enabled for swap with no particular
+		 * policy flagged, we set all swap discard flags here in
+		 * order to sustain backward compatibility with older
+		 * swapon(8) releases.
+		 */
+		si->flags |= (SWP_DISCARDABLE | SWP_AREA_DISCARD |
+			     SWP_PAGE_DISCARD);
+
+		/*
+		 * By flagging sys_swapon, a sysadmin can tell us to
+		 * either do single-time area discards only, or to just
+		 * perform discards for released swap page-clusters.
+		 * Now it's time to adjust the p->flags accordingly.
+		 */
+		if (swap_flags & SWAP_FLAG_DISCARD_ONCE)
+			si->flags &= ~SWP_PAGE_DISCARD;
+		else if (swap_flags & SWAP_FLAG_DISCARD_PAGES)
+			si->flags &= ~SWP_AREA_DISCARD;
+
+		/* issue a swapon-time discard if it's still required */
+		if (si->flags & SWP_AREA_DISCARD) {
+			int err = discard_swap(si);
+			if (unlikely(err))
+				pr_err("swapon: discard_swap(%p): %d\n",
+					si, err);
+		}
+	}
+
+	error = init_swap_address_space(si->type, maxpages);
+	if (error)
+		goto bad_swap_unlock_inode;
+
+	error = zswap_swapon(si->type, maxpages);
+	if (error)
+		goto free_swap_address_space;
+
+	/*
+	 * Flush any pending IO and dirty mappings before we start using this
+	 * swap device.
+	 */
+	inode->i_flags |= S_SWAPFILE;
+	error = inode_drain_writes(inode);
+	if (error) {
+		inode->i_flags &= ~S_SWAPFILE;
+		goto free_swap_zswap;
+	}
+
+	mutex_lock(&swapon_mutex);
+	prio = -1;
+	if (swap_flags & SWAP_FLAG_PREFER)
+		prio =
+		  (swap_flags & SWAP_FLAG_PRIO_MASK) >> SWAP_FLAG_PRIO_SHIFT;
+	enable_swap_info(si, prio, swap_map, cluster_info, zeromap);
+
+	pr_info("Adding %uk swap on %s.  Priority:%d extents:%d across:%lluk %s%s%s%s\n",
+		K(si->pages), name->name, si->prio, nr_extents,
+		K((unsigned long long)span),
+		(si->flags & SWP_SOLIDSTATE) ? "SS" : "",
+		(si->flags & SWP_DISCARDABLE) ? "D" : "",
+		(si->flags & SWP_AREA_DISCARD) ? "s" : "",
+		(si->flags & SWP_PAGE_DISCARD) ? "c" : "");
+
+	mutex_unlock(&swapon_mutex);
+	atomic_inc(&proc_poll_event);
+	wake_up_interruptible(&proc_poll_wait);
+
+	error = 0;
+	goto out;
+free_swap_zswap:
+	zswap_swapoff(si->type);
+free_swap_address_space:
+	exit_swap_address_space(si->type);
+bad_swap_unlock_inode:
+	inode_unlock(inode);
+bad_swap:
+	free_percpu(si->percpu_cluster);
+	si->percpu_cluster = NULL;
+	kfree(si->global_cluster);
+	si->global_cluster = NULL;
+	inode = NULL;
+	destroy_swap_extents(si);
+	swap_cgroup_swapoff(si->type);
+	spin_lock(&swap_lock);
+	si->swap_file = NULL;
+	si->flags = 0;
+	spin_unlock(&swap_lock);
+	vfree(swap_map);
+	kvfree(zeromap);
+	kvfree(cluster_info);
+	if (inced_nr_rotate_swap)
+		atomic_dec(&nr_rotate_swap);
+	if (swap_file)
+		filp_close(swap_file, NULL);
+out:
+	if (!IS_ERR_OR_NULL(folio))
+		folio_release_kmap(folio, swap_header);
+	if (name)
+		putname(name);
+	if (inode)
+		inode_unlock(inode);
+	if (!error)
+		enable_swap_slots_cache();
+	return error;
+}
+int kernel_swapon(char* specialfile, int swap_flags,struct swap_info_struct *si)
+{
 	struct filename *name;
 	struct file *swap_file = NULL;
 	struct address_space *mapping;

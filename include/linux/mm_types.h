@@ -784,6 +784,9 @@ struct vm_area_struct {
 	struct vma_numab_state *numab_state;	/* NUMA Balancing state */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef CONFIG_SWAP_VMA
+   	struct swap_info_struct *si; // each VMA is connected to a swap struct
+#endif
 } __randomize_layout;
 
 #ifdef CONFIG_NUMA
