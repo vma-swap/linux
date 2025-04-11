@@ -2951,6 +2951,10 @@ static int swap_show(struct seq_file *swap, void *v)
 		case(12):
 			seq_printf(swap,"SWP_SYNCHRONOUS_IO: %d\n",value);
 			break;
+		case(13):
+			seq_printf(swap,"SWP_ARRANGE_CLUSTERS_BY_ROW: %d\n",value);
+			break;
+		
 		default:
 			seq_printf(swap,"SWP_UNKNOWN: %d\n",value);
 			break;
@@ -3328,25 +3332,48 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 	 * sharing same address space.
 	 */
 	trace_init_swap_cluster(nr_clusters,SWAP_CLUSTER_COLS,DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS));
-	for (k = 0; k < SWAP_CLUSTER_COLS; k++) {
-		j = k % SWAP_CLUSTER_COLS;
-		for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) {
-			struct swap_cluster_info *ci;
-			idx = i * SWAP_CLUSTER_COLS + j;
-			ci = cluster_info + idx;
-			if (idx >= nr_clusters)
-				continue;
-			if (ci->count) {
-				ci->flags = CLUSTER_FLAG_NONFULL;
-				list_add_tail(&ci->list, &si->nonfull_clusters[0]);
-				continue;
+	if(!(si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW)){
+		printk(KERN_ERR "arranging clusters by column\n");
+		for (k = 0; k < SWAP_CLUSTER_COLS; k++) {
+			j = k % SWAP_CLUSTER_COLS;
+			for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) {
+				struct swap_cluster_info *ci;
+				idx = i * SWAP_CLUSTER_COLS + j;
+				ci = cluster_info + idx;
+				if (idx >= nr_clusters)
+					continue;
+				if (ci->count) {
+					ci->flags = CLUSTER_FLAG_NONFULL;
+					list_add_tail(&ci->list, &si->nonfull_clusters[0]);
+					continue;
+				}
+				ci->flags = CLUSTER_FLAG_FREE;
+				trace_init_swap_cluster_add_to_free(k, i, cluster_offset(si, ci));
+				list_add_tail(&ci->list, &si->free_clusters);
 			}
-			ci->flags = CLUSTER_FLAG_FREE;
-			trace_init_swap_cluster_add_to_free(k, i, cluster_offset(si, ci));
-			list_add_tail(&ci->list, &si->free_clusters);
 		}
 	}
+	else {
+		printk(KERN_ERR "arranging clusters by row\n");
+		for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) {
+			for (j = 0; j < SWAP_CLUSTER_COLS; j++) {
+				struct swap_cluster_info *ci;
+				idx = i * SWAP_CLUSTER_COLS + j;
+				ci = cluster_info + idx;
+				if (idx >= nr_clusters)
+					continue;
+				if (ci->count) {
+					ci->flags = CLUSTER_FLAG_NONFULL;
+					list_add_tail(&ci->list, &si->nonfull_clusters[0]);
+					continue;
+				}
+				ci->flags = CLUSTER_FLAG_FREE;
+				trace_init_swap_cluster_add_to_free(k, i, cluster_offset(si, ci));
+				list_add_tail(&ci->list, &si->free_clusters);
+			}
+		}
 
+	}
 	return cluster_info;
 
 err_free:
@@ -3491,7 +3518,11 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		cluster_info = NULL;
 		goto bad_swap_unlock_inode;
 	}
-
+	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
+		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
+		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
+	}
+	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
 	if ((swap_flags & SWAP_FLAG_DISCARD) &&
 	    si->bdev && bdev_max_discard_sectors(si->bdev)) {
 		/*
