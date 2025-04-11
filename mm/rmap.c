@@ -1645,7 +1645,7 @@ void folio_remove_rmap_pmd(struct folio *folio, struct page *page,
  */
 static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
-{
+{	
 	struct mm_struct *mm = vma->vm_mm;
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
 	pte_t pteval;
@@ -1837,6 +1837,28 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			dec_mm_counter(mm, mm_counter(folio));
 		} else if (folio_test_anon(folio)) {
 			swp_entry_t entry = page_swap_entry(subpage);
+			struct swap_cluster_info *ci;
+			unsigned long offset;
+			printk("try_to_unmap_one: %lx\n", entry.val);
+			struct swap_info_struct *si = swp_swap_info(entry);
+			if (!si) {
+				printk("try_to_unmap_one: si is NULL\n");
+				return false;
+			}
+			offset = swp_offset(entry);
+			printk("try_to_unmap_one: offset = %lx\n", offset);
+			ci = lock_cluster(si, offset);
+			if (!ci) {
+				printk("try_to_unmap_one: ci is NULL for page offset: %lx and cluster: %lx\n", offset, offset / SWAPFILE_CLUSTER);
+				return false;
+			}
+			printk("try_to_unmap_one: ci->lock acquired\n");
+			si->swap_slot_vma_infos[offset].pid = vma->vm_mm->owner->tgid;
+			printk("try_to_unmap_one: si->swap_slot_vma_infos[offset].pid = %d\n", si->swap_slot_vma_infos[offset].pid);
+			si->swap_slot_vma_infos[offset].addr = address;
+			printk("try_to_unmap_one: si->swap_slot_vma_infos[offset].addr = %lx\n", si->swap_slot_vma_infos[offset].addr);
+			unlock_cluster(ci);
+			printk("try_to_unmap_one: ci->lock released\n");
 			pte_t swp_pte;
 			/*
 			 * Store the swap location in the pte.

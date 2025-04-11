@@ -297,7 +297,10 @@ struct percpu_cluster {
 	local_lock_t lock; /* Protect the percpu_cluster above */
 	unsigned int next[SWAP_NR_ORDERS]; /* Likely next allocation offset */
 };
-
+struct swap_slot_vma_info{
+	pid_t pid;
+	unsigned long addr;
+};
 /*
  * The in-memory structure used to track swap areas.
  */
@@ -308,6 +311,7 @@ struct swap_info_struct {
 	struct plist_node list;		/* entry in swap_active_head */
 	signed char	type;		/* strange name for an index */
 	unsigned int	max;		/* extent of the swap_map */
+	struct swap_slot_vma_info *swap_slot_vma_infos; /* vmalloc'ed array of swap slot vma info */
 	unsigned char *swap_map;	/* vmalloc'ed array of usage counts */
 	unsigned long *zeromap;		/* kvmalloc'ed bitmap to track zero pages */
 	struct swap_cluster_info *cluster_info; /* cluster info. Only for SSD */

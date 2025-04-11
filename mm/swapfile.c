@@ -2930,15 +2930,18 @@ static int swap_show(struct seq_file *swap, void *v)
 		seq_printf(swap," CLUSTER_FLAG_FULL=%d",CLUSTER_FLAG_FULL);
 		seq_printf(swap," CLUSTER_FLAG_DISCARD=%d",CLUSTER_FLAG_DISCARD);
 		seq_printf(swap," CLUSTER_FLAG_MAX=%d\n",CLUSTER_FLAG_MAX);
-
 		for (int row = 0; row < 2048; row++) {
 			for (int col = 0; col < 32; col++) {
 				int idx = (row * 32 + col);
-				seq_printf(swap,"%d:c%d:f%d",idx,si->cluster_info[idx].count,si->cluster_info[idx].flags);
-				if (si->cluster_info[idx].count != 0){
+				struct swap_cluster_info ci = si->cluster_info[idx];
+				unsigned int offset = cluster_offset(si, &ci);
+				seq_printf(swap,"%d:c%d:f%d",idx,ci.count,ci.flags);
+				if (ci.count != 0){
 					for (int i = 0; i < 512; i++){
 						seq_puts(swap,":");
 						seq_printf(swap,"%x",si->swap_map[idx*512+i]);
+						seq_puts(swap,":");
+						seq_printf(swap,"%d,%lx",si->swap_slot_vma_infos[idx*512+i].pid,si->swap_slot_vma_infos[idx*512+i].addr);
 					}
 				}
 				seq_puts(swap," ");
@@ -3360,6 +3363,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	unsigned long maxpages;
 	unsigned char *swap_map = NULL;
 	unsigned long *zeromap = NULL;
+	struct swap_slot_vma_info *swap_slot_vma_infos = NULL;
 	struct swap_cluster_info *cluster_info = NULL;
 	struct folio *folio = NULL;
 	struct inode *inode = NULL;
@@ -3461,6 +3465,13 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		error = -ENOMEM;
 		goto bad_swap_unlock_inode;
 	}
+
+	swap_slot_vma_infos = vzalloc(sizeof(swap_slot_vma_infos) * maxpages);
+	if (!swap_slot_vma_infos) {
+		error = -ENOMEM;
+		goto bad_swap_unlock_inode;
+	}
+	si->swap_slot_vma_infos = swap_slot_vma_infos;
 
 	if (si->bdev && bdev_stable_writes(si->bdev))
 		si->flags |= SWP_STABLE_WRITES;
