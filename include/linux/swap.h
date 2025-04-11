@@ -368,6 +368,43 @@ static inline swp_entry_t page_swap_entry(struct page *page)
 	return entry;
 }
 
+#ifdef CONFIG_THP_SWAP
+#define SWAPFILE_CLUSTER	HPAGE_PMD_NR
+
+#define swap_entry_order(order)	(order)
+#else
+#define SWAPFILE_CLUSTER	256
+
+/*
+ * Define swap_entry_order() as constant to let compiler to optimize
+ * out some code if !CONFIG_THP_SWAP
+ */
+#define swap_entry_order(order)	0
+#endif
+
+static inline struct swap_cluster_info *offset_to_cluster(struct swap_info_struct *si,
+							  unsigned long offset)
+{
+	return &si->cluster_info[offset / SWAPFILE_CLUSTER];
+}
+
+static inline struct swap_cluster_info *lock_cluster(struct swap_info_struct *si,
+						     unsigned long offset)
+{
+	struct swap_cluster_info *ci;
+
+	ci = offset_to_cluster(si, offset);
+	spin_lock(&ci->lock);
+
+	return ci;
+}
+
+static inline void unlock_cluster(struct swap_cluster_info *ci)
+{
+	spin_unlock(&ci->lock);
+}
+
+
 /* linux/mm/workingset.c */
 bool workingset_test_recent(void *shadow, bool file, bool *workingset,
 				bool flush);
