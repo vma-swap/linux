@@ -68,6 +68,8 @@
 #include <net/ip.h>
 #include "slab.h"
 #include "memcontrol-v1.h"
+#include <trace/events/swap.h>
+
 
 #include <linux/uaccess.h>
 
