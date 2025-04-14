@@ -1084,6 +1084,7 @@ static void swap_range_alloc(struct swap_info_struct *si,
 	}
 }
 
+//ci->lock is held
 static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 			    unsigned int nr_entries)
 {
@@ -1100,6 +1101,10 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 	for (i = 0; i < nr_entries; i++) {
 		clear_bit(offset + i, si->zeromap);
 		zswap_invalidate(swp_entry(si->type, offset + i));
+		// printk("swap_range_free: offset = %lx\n", offset);
+		si->swap_slot_vma_infos[offset + i].pid = 0;
+		si->swap_slot_vma_infos[offset + i].addr = 0;
+		// printk("swap_range_free: swap_slot_vma_infos[%lx] = %lx\n", offset + i, si->swap_slot_vma_infos[offset + i].pid);
 	}
 
 	if (si->flags & SWP_BLKDEV)
@@ -3466,11 +3471,12 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		goto bad_swap_unlock_inode;
 	}
 
-	swap_slot_vma_infos = vzalloc(sizeof(swap_slot_vma_infos) * maxpages);
+	swap_slot_vma_infos = vzalloc(sizeof(struct swap_slot_vma_info) * maxpages);
 	if (!swap_slot_vma_infos) {
 		error = -ENOMEM;
 		goto bad_swap_unlock_inode;
 	}
+	printk("allocated swap_slot_vma_infos for %lu pages with a total of %lu bytes", maxpages, sizeof(struct swap_slot_vma_info) * maxpages);
 	si->swap_slot_vma_infos = swap_slot_vma_infos;
 
 	if (si->bdev && bdev_stable_writes(si->bdev))
