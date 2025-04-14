@@ -2851,6 +2851,13 @@ static void swap_stop(struct seq_file *swap, void *v)
 	mutex_unlock(&swapon_mutex);
 }
 
+#define SWAP_CLUSTER_INFO_COLS						\
+	DIV_ROUND_UP(L1_CACHE_BYTES, sizeof(struct swap_cluster_info))
+#define SWAP_CLUSTER_SPACE_COLS						\
+	DIV_ROUND_UP(SWAP_ADDRESS_SPACE_PAGES, SWAPFILE_CLUSTER)
+#define SWAP_CLUSTER_COLS						\
+	max_t(unsigned int, SWAP_CLUSTER_INFO_COLS, SWAP_CLUSTER_SPACE_COLS)
+
 static int swap_show(struct seq_file *swap, void *v)
 {
 	struct swap_info_struct *si = v;
@@ -2877,7 +2884,7 @@ static int swap_show(struct seq_file *swap, void *v)
 			si->prio);
 	// print si-flags
 	seq_puts(swap,"flags:\n");
-	for (int i = 0; i < 13; i++) {
+	for (int i = 0; i < 32; i++) {
 		bool value = (si->flags & (1 << i));
 		switch(i){
 		case(0):
@@ -2922,7 +2929,6 @@ static int swap_show(struct seq_file *swap, void *v)
 		case(13):
 			seq_printf(swap,"SWP_ARRANGE_CLUSTERS_BY_ROW: %d\n",value);
 			break;
-		
 		default:
 			seq_printf(swap,"SWP_UNKNOWN: %d\n",value);
 			break;
@@ -2935,18 +2941,20 @@ static int swap_show(struct seq_file *swap, void *v)
 		seq_printf(swap," CLUSTER_FLAG_FULL=%d",CLUSTER_FLAG_FULL);
 		seq_printf(swap," CLUSTER_FLAG_DISCARD=%d",CLUSTER_FLAG_DISCARD);
 		seq_printf(swap," CLUSTER_FLAG_MAX=%d\n",CLUSTER_FLAG_MAX);
-		for (int row = 0; row < 2048; row++) {
-			for (int col = 0; col < 32; col++) {
-				int idx = (row * 32 + col);
+		unsigned long nr_clusters = DIV_ROUND_UP(si->max, SWAPFILE_CLUSTER);
+		int rows = DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS);
+		seq_printf(swap,"number of clusters: %lu with %d rows and %d columns\n",nr_clusters,rows,SWAP_CLUSTER_COLS);
+		for (int row = 0; row < rows; row++) {
+			for (int col = 0; col < SWAP_CLUSTER_COLS; col++) {
+				int idx = (row * SWAP_CLUSTER_COLS + col);
 				struct swap_cluster_info ci = si->cluster_info[idx];
-				unsigned int offset = cluster_offset(si, &ci);
 				seq_printf(swap,"%d:c%d:f%d",idx,ci.count,ci.flags);
 				if (ci.count != 0){
 					for (int i = 0; i < 512; i++){
 						seq_puts(swap,":");
-						seq_printf(swap,"%x",si->swap_map[idx*512+i]);
+						seq_printf(swap,"%x",si->swap_map[idx*SWAPFILE_CLUSTER+i]);
 						seq_puts(swap,":");
-						seq_printf(swap,"%d,%lx",si->swap_slot_vma_infos[idx*512+i].pid,si->swap_slot_vma_infos[idx*512+i].addr);
+						seq_printf(swap,"%d,%lx",si->swap_slot_vma_infos[idx*SWAPFILE_CLUSTER+i].pid,si->swap_slot_vma_infos[idx*SWAPFILE_CLUSTER+i].addr);
 					}
 				}
 				seq_puts(swap," ");
@@ -3188,13 +3196,6 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 
 	return maxpages;
 }
-
-#define SWAP_CLUSTER_INFO_COLS						\
-	DIV_ROUND_UP(L1_CACHE_BYTES, sizeof(struct swap_cluster_info))
-#define SWAP_CLUSTER_SPACE_COLS						\
-	DIV_ROUND_UP(SWAP_ADDRESS_SPACE_PAGES, SWAPFILE_CLUSTER)
-#define SWAP_CLUSTER_COLS						\
-	max_t(unsigned int, SWAP_CLUSTER_INFO_COLS, SWAP_CLUSTER_SPACE_COLS)
 
 static int setup_swap_map_and_extents(struct swap_info_struct *si,
 					union swap_header *swap_header,
@@ -3491,6 +3492,14 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		atomic_inc(&nr_rotate_swap);
 		inced_nr_rotate_swap = true;
 	}
+	
+	// print a bitmap of the swap_flags
+	printk(KERN_INFO "swapon: swap_flags: %x\n", swap_flags);
+	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
+		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
+		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
+	}
+	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
 
 	cluster_info = setup_clusters(si, swap_header, maxpages);
 	if (IS_ERR(cluster_info)) {
@@ -3498,11 +3507,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		cluster_info = NULL;
 		goto bad_swap_unlock_inode;
 	}
-	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
-		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
-		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
-	}
-	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
 	if ((swap_flags & SWAP_FLAG_DISCARD) &&
 	    si->bdev && bdev_max_discard_sectors(si->bdev)) {
 		/*
