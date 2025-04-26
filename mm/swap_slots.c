@@ -240,10 +240,11 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 		return 0;
 
 	cache->cur = 0;
+	#ifndef CONFIG_SWAP_VMA
 	if (swap_slot_cache_active)
 		cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE,
 					   cache->slots, 0);
-
+	#endif
 	trace_refill_swap_slots_cache(cache->slots, cache->nr);
 	return cache->nr;
 }
@@ -255,12 +256,20 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 
 	entry.val = 0;
 
+ 	#ifndef CONFIG_SWAP_VMA
 	if (folio_test_large(folio)) {
 		if (IS_ENABLED(CONFIG_THP_SWAP))
 			get_swap_pages(1, &entry, folio_order(folio));
 		goto out;
 	}
+	#endif
 
+ 	#ifdef CONFIG_SWAP_VMA
+	printk(KERN_INFO "foli_alloc_swap: fetching a swap entry for folio = %lx\n", folio_index(folio));
+	get_swap_pages(1, &entry, folio_order(folio),folio);
+	printk(KERN_INFO "foli_alloc_swap: found swap entry val %lu\n", entry.val);
+	goto out;
+	#endif
 	/*
 	 * Preemption is allowed here, because we may sleep
 	 * in refill_swap_slots_cache().  But it is safe, because
@@ -289,8 +298,9 @@ repeat:
 		if (entry.val)
 			goto out;
 	}
-
+ 	#ifndef CONFIG_SWAP_VMA
 	get_swap_pages(1, &entry, 0);
+	#endif
 out:
 	if (mem_cgroup_try_charge_swap(folio, entry)) {
 		put_swap_folio(folio, entry);

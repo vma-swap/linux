@@ -497,6 +497,9 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->vm_ops = &vma_dummy_vm_ops;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma_mark_detached(vma, false);
+	#ifdef CONFIG_SWAP_VMA
+	vma->vma_swap_buddy_node=NULL;
+	#endif
 }
 
 static inline struct vm_area_struct *vm_area_alloc(struct mm_struct *mm)
@@ -528,7 +531,9 @@ static inline struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 		return NULL;
 	}
 	INIT_LIST_HEAD(&new->anon_vma_chain);
-
+	#ifdef CONFIG_SWAP_VMA
+	new->vma_swap_buddy_node = NULL;
+	#endif
 	return new;
 }
 

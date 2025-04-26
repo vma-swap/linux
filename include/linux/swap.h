@@ -30,10 +30,13 @@ struct pagevec;
 #define SWAP_FLAG_DISCARD_PAGES 0x40000 /* discard page-clusters after use */
 // add a new flag for row arrangement of clusters
 #define SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW	0x80000 /* arrange clusters by row */
+#define SWAP_FLAG_USE_VMA	0x100000 /* use vma to map a folio to the swapfile */
 #define SWAP_FLAGS_VALID	(SWAP_FLAG_PRIO_MASK | SWAP_FLAG_PREFER | \
 				 SWAP_FLAG_DISCARD | SWAP_FLAG_DISCARD_ONCE | \
 				 SWAP_FLAG_DISCARD_PAGES | \
-				 SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW)
+				 SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW | \
+				 SWAP_FLAG_USE_VMA)
+
 #define SWAP_BATCH 64
 
 static inline int current_is_kswapd(void)
@@ -221,6 +224,7 @@ enum {
 	SWP_STABLE_WRITES = (1 << 11),	/* no overwrite PG_writeback pages */
 	SWP_SYNCHRONOUS_IO = (1 << 12),	/* synchronous IO is efficient */
 	SWP_ARRANGE_CLUSTERS_BY_ROW = (1 << 13), /* arrange clusters by row, default is by col to reduce false share */
+	SWP_USE_VMA = (1 << 14),	/* use the virtual address to map a folio to the swapfile */
 					/* add others here before... */
 };
 
@@ -314,6 +318,9 @@ struct swap_info_struct {
 	struct swap_slot_vma_info *swap_slot_vma_infos; /* vmalloc'ed array of swap slot vma info */
 	unsigned char *swap_map;	/* vmalloc'ed array of usage counts */
 	unsigned long *zeromap;		/* kvmalloc'ed bitmap to track zero pages */
+	#ifdef CONFIG_SWAP_VMA
+	struct swap_buddy_area *swap_buddy_area;
+	#endif
 	struct swap_cluster_info *cluster_info; /* cluster info. Only for SSD */
 	struct list_head free_clusters; /* free clusters list */
 	struct list_head full_clusters; /* full clusters list */
@@ -532,7 +539,11 @@ swp_entry_t folio_alloc_swap(struct folio *folio);
 bool folio_free_swap(struct folio *folio);
 void put_swap_folio(struct folio *folio, swp_entry_t entry);
 extern swp_entry_t get_swap_page_of_type(int);
+#ifdef CONFIG_SWAP_VMA
+extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order,struct folio* folio);
+#else
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order);
+#endif
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t, int);
 extern int swap_duplicate(swp_entry_t);

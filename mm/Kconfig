@@ -22,6 +22,21 @@ menuconfig SWAP
 	  used to provide more virtual memory than the actual RAM present
 	  in your computer.  If unsure say Y.
 
+config SWAP_VMA
+	bool "Enable buddy allocator for swap space management for VMA aware swap"
+	depends on SWAP
+	default n
+	help
+	  This option enables a buddy allocator system for swap space management,
+	  which provides better sequential allocation and support for variable-sized
+	  swap regions that can be dynamically enlarged.
+	  
+	  The buddy allocator improves swap space utilization by reducing fragmentation
+	  and allows for more efficient handling of swap operations. It is especially
+	  beneficial for systems with high memory pressure and significant swap usage.
+	  
+	  If unsure, say N.
+
 config ZSWAP
 	bool "Compressed cache for swap pages"
 	depends on SWAP

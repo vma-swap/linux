@@ -283,6 +283,35 @@ typedef struct {
 	unsigned long val;
 } swp_entry_t;
 
+struct swap_buddy_node;
+typedef struct swap_buddy_node swap_buddy_node_t;
+struct vma_swap_buddy_node;
+typedef struct vma_swap_buddy_node vma_swap_buddy_node_t;
+struct swap_buddy_node{
+    spinlock_t lock;            /* Protects swapfile array, later we will remove the array and allocate dynamically,  */
+    swp_entry_t start_entry;  /* First swap entry in this block */
+    unsigned int level;         /* Tree level, determines block size (2^level entries) */
+	//atomic used which can be taken
+	int used;             /* Number of entries in use */
+	int fragmented;       /* if there is a subnode taken in this tree */
+    swap_buddy_node_t *parent;
+    swap_buddy_node_t *left;
+    swap_buddy_node_t *right;
+    swap_buddy_node_t *next;
+};
+
+struct swap_buddy_area {
+    spinlock_t lock;            /* Protects the tree structure */
+    unsigned long maxpages;   /* Total number of swap entries in this area */
+    unsigned int max_level;     /* Height of the tree */
+    swap_buddy_node_t *root;
+};
+struct vma_swap_buddy_node{
+	swap_buddy_node_t *node;
+	unsigned long start_addr;
+	unsigned long end_addr;
+	vma_swap_buddy_node_t *next;
+};
 /**
  * struct folio - Represents a contiguous set of bytes.
  * @flags: Identical to the page flags.
@@ -784,6 +813,9 @@ struct vm_area_struct {
 	struct vma_numab_state *numab_state;	/* NUMA Balancing state */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef CONFIG_SWAP_VMA
+    vma_swap_buddy_node_t *vma_swap_buddy_node; // a list of swap buddy nodes
+#endif
 } __randomize_layout;
 
 #ifdef CONFIG_NUMA
