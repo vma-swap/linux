@@ -1271,7 +1271,8 @@ int *vma_alloc_swap_info(struct swap_info_struct* si)
 	}
 	printk(KERN_INFO "mkswap completed successfully\n");
 	//now call swapon on the file using internal kernel function
-	return kernel_swapon(path, 0);
+	int swap_flags = 0|SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW;
+	return kernel_swapon(path, swap_flags, si);
 
 }
 static bool vma_swap_info(struct folio *folio, struct vm_area_struct *vma,
