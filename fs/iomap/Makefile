@@ -15,3 +15,4 @@ iomap-$(CONFIG_BLOCK)		+= buffered-io.o \
 				   fiemap.o \
 				   seek.o
 iomap-$(CONFIG_SWAP)		+= swapfile.o
+iomap-$(CONFIG_SWAP_VMA) += swapfile.o
