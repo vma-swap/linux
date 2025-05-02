@@ -297,7 +297,6 @@ struct swap_buddy_node{
     swap_buddy_node_t *parent;
     swap_buddy_node_t *left;
     swap_buddy_node_t *right;
-    swap_buddy_node_t *next;
 };
 
 struct swap_buddy_area {

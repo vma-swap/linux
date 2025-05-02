@@ -56,9 +56,14 @@
 static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
 				 unsigned char);
 static void free_swap_count_continuations(struct swap_info_struct *);
+#ifndef CONFIG_SWAP_VMA
 static void swap_entry_range_free(struct swap_info_struct *si,
 				  struct swap_cluster_info *ci,
 				  swp_entry_t entry, unsigned int nr_pages);
+#else
+static void swap_entry_range_free(struct swap_info_struct *si,
+				  swp_entry_t entry, unsigned int nr_pages);
+#endif
 static void swap_range_alloc(struct swap_info_struct *si,
 			     unsigned int nr_entries);
 static bool folio_swapcache_freeable(struct folio *folio);
@@ -243,9 +248,15 @@ static int __try_to_reclaim_swap(struct swap_info_struct *si,
 	 * swap_map is HAS_CACHE only, which means the slots have no page table
 	 * reference or pending writeback, and can't be allocated to others.
 	 */
+	#ifndef CONFIG_SWAP_VMA
 	ci = lock_cluster(si, offset);
 	need_reclaim = swap_is_has_cache(si, offset, nr_pages);
 	unlock_cluster(ci);
+	#else
+	spin_lock(&si->lock);
+	need_reclaim = swap_is_has_cache(si, offset, nr_pages);
+	spin_unlock(&si->lock);
+	#endif
 	if (!need_reclaim)
 		goto out_unlock;
 
@@ -262,10 +273,16 @@ static int __try_to_reclaim_swap(struct swap_info_struct *si,
 	xa_unlock_irq(&address_space->i_pages);
 	folio_ref_sub(folio, nr_pages);
 	folio_set_dirty(folio);
-
+	#ifndef CONFIG_SWAP_VMA
 	ci = lock_cluster(si, offset);
 	swap_entry_range_free(si, ci, entry, nr_pages);
 	unlock_cluster(ci);
+	#else
+	spin_lock(&si->lock);
+	swap_entry_range_free(si, entry, nr_pages);
+	spin_unlock(&si->lock);
+	#endif
+
 	ret = nr_pages;
 out_unlock:
 	folio_unlock(folio);
@@ -720,10 +737,10 @@ static bool vma_alloc_range(struct swap_info_struct *si, swap_buddy_node_t *node
 		return false;
 
 
-	spin_lock(&node->lock);
+	spin_lock(&si->lock);
 	memset(si->swap_map + start, SWAP_HAS_CACHE, nr_pages);
 	swap_range_alloc(si, nr_pages);
-	spin_unlock(&node->lock);
+	spin_unlock(&si->lock);
 
 	return true;
 }
@@ -983,7 +1000,7 @@ static void del_from_avail_list(struct swap_info_struct *si, bool swapoff)
 {
 	int nid;
 	unsigned long pages;
-
+	printk("del_from_avail_list: inuse_pages = %lx\n", atomic_long_read(&si->inuse_pages));
 	spin_lock(&swap_avail_lock);
 
 	if (swapoff) {
@@ -1020,6 +1037,7 @@ skip:
 /* SWAP_USAGE_OFFLIST_BIT can only be cleared by this helper. */
 static void add_to_avail_list(struct swap_info_struct *si, bool swapon)
 {
+	printk("add_to_avail_list: inuse_pages = %lx\n", atomic_long_read(&si->inuse_pages));
 	int nid;
 	long val;
 	unsigned long pages;
@@ -1052,7 +1070,6 @@ static void add_to_avail_list(struct swap_info_struct *si, bool swapon)
 					    pages | SWAP_USAGE_OFFLIST_BIT))
 			goto skip;
 	}
-
 	for_each_node(nid)
 		plist_add(&si->avail_lists[nid], &swap_avail_heads[nid]);
 
@@ -1068,6 +1085,7 @@ skip:
 static bool swap_usage_add(struct swap_info_struct *si, unsigned int nr_entries)
 {
 	long val = atomic_long_add_return_relaxed(nr_entries, &si->inuse_pages);
+	printk(KERN_INFO "swap_usage_add: inuse_pages = %lx", atomic_long_read(&si->inuse_pages));
 
 	/*
 	 * If device is full, and SWAP_USAGE_OFFLIST_BIT is not set,
@@ -1084,6 +1102,7 @@ static bool swap_usage_add(struct swap_info_struct *si, unsigned int nr_entries)
 static void swap_usage_sub(struct swap_info_struct *si, unsigned int nr_entries)
 {
 	long val = atomic_long_sub_return_relaxed(nr_entries, &si->inuse_pages);
+	printk(KERN_INFO "swap_usage_sub: inuse_pages = %lx", atomic_long_read(&si->inuse_pages));
 
 	/*
 	 * If device is not full, and SWAP_USAGE_OFFLIST_BIT is set,
@@ -1223,7 +1242,7 @@ struct vma_rmap_data {
 		struct swap_info_struct *si;
 };
 
-static inline swap_buddy_node_t* get_folios_node(struct folio *folio,struct vm_area_struct *vma)
+static swap_buddy_node_t* get_folios_node(struct folio *folio,struct vm_area_struct *vma)
 {
 	// printk(KERN_INFO "get_folios_node: folio = %lx\n", folio_index(folio));
 	vma_swap_buddy_node_t* vma_buddy_node = vma->vma_swap_buddy_node;
@@ -1237,13 +1256,30 @@ static inline swap_buddy_node_t* get_folios_node(struct folio *folio,struct vm_a
 	return NULL;
 }
 //this can be called only if the folio i part of the vma (after allocation)
-static inline swp_entry_t get_folio_entry_in_node(struct folio *folio, swap_buddy_node_t *node, struct vm_area_struct *vma,struct swap_info_struct* si)
+static swp_entry_t get_folio_entry_in_node(struct folio *folio, swap_buddy_node_t *node, struct vm_area_struct *vma,struct swap_info_struct* si)
 {
 	unsigned long folio_offset = folio_index(folio) - vma->vm_pgoff;
 	// printk(KERN_INFO "get_folio_entry_in_node: folio = %lx, folio_offset = %lx\n", folio_index(folio), folio_offset);
 	return swp_entry(si->type,node->start_entry.val + folio_offset);
 }
-
+//dir=0 for left, 1 for right
+static swap_buddy_node_t* alloc_new_node(struct swap_info_struct *si,swap_buddy_node_t* parent,int dir){
+	swap_buddy_node_t* node = kmalloc(sizeof(swap_buddy_node_t), GFP_KERNEL);
+	if (!node)
+		return NULL;
+	node->parent = parent;
+	node->left = NULL;
+	node->right = NULL;
+	node->used = false;
+	node->fragmented = false;
+	spin_lock_init(&node->lock);
+	node->level = parent->level - 1;
+	if(dir==0)
+		node->start_entry = parent->start_entry;
+	else
+		node->start_entry = swp_entry(si->type,node->start_entry.val + (1 << node->level));
+	return node;
+}
 //for now this cannot fail.
 static swap_buddy_node_t* alloc_swap_node(struct swap_info_struct *si,unsigned long size){
 	// printk(KERN_INFO "alloc_swap_node: size = %lx\n", size);
@@ -1265,6 +1301,8 @@ static swap_buddy_node_t* alloc_swap_node(struct swap_info_struct *si,unsigned l
 			swap_buddy_node_t* parent = node->parent;
 			while(parent){
 				parent->fragmented = true;
+				if(parent->right&&parent->right->used&&parent->left&&parent->left->used){
+					parent->used = true;
 				parent = parent->parent;
 			}
 			spin_unlock(&(si->swap_buddy_area)->lock);
@@ -1273,16 +1311,68 @@ static swap_buddy_node_t* alloc_swap_node(struct swap_info_struct *si,unsigned l
 
 		}
 		if (target_level < node->level){
-			//go down left
-			node = node->left;
+			if(!node->left)
+				node->left=alloc_new_node(si,node,0);
+			else if(!node->left->used)
+				node = node->left;
+			else if(!node->right)
+				node->right=alloc_new_node(si,node,1);
+			else if(!node->right->used)
+				node = node->right;
+			else{
+				//both are used so no more place
+				break;
+			}
 		}
-		else{
-			//go to the next node in the same level since we must be in the target level
-			node = node->next;
-		}
+		break;
 	}
 	//we assume this is unreacable (FOR NOW)
-	// printk(KERN_INFO "alloc_swap_node: no free node found, failed allocating swap node\n");
+	printk(KERN_INFO "alloc_swap_node: no free node found, failed allocating swap node\n");
+	node = (si->swap_buddy_area)->root;
+	//re iter for debug purposes
+	while(node){
+		printk(KERN_INFO "alloc_swap_node: node = %lx, level = %lx\n", node->start_entry.val, node->level);
+		if(target_level == node->level && (!node->fragmented) && (!node->used)){
+			//found a free node
+			printk(KERN_INFO "alloc_swap_node: found a free node with entry = %lx\n", node->start_entry.val);
+			node->used = true;
+			node->fragmented = true;
+			//traverse up the tree and mark all nodes as fragmented
+			swap_buddy_node_t* parent = node->parent;
+			while(parent){
+				parent->fragmented = true;
+				if(parent->right&&parent->right->used&&parent->left&&parent->left->used){
+					parent->used = true;
+				parent = parent->parent;
+			}
+			spin_unlock(&(si->swap_buddy_area)->lock);
+			vma_alloc_range(si, node, swp_offset(node->start_entry));
+			return node;
+
+		}
+		if (target_level < node->level){
+			if(!node->left){
+				printk(KERN_INFO "alloc_swap_node: left node is NULL, allocating new node\n");
+				node->left=alloc_new_node(si,node,0);
+			}
+			else if(!node->left->used){
+				printk(KERN_INFO "alloc_swap_node: left node is free, going left\n");
+				node = node->left;
+			}
+			else if(!node->right){
+				printk(KERN_INFO "alloc_swap_node: right node is NULL, allocating new node\n");
+				node->right=alloc_new_node(si,node,1);
+			}
+			else if(!node->right->used){
+				printk(KERN_INFO "alloc_swap_node: right node is free, going right\n");
+				node = node->right;
+			}
+			else{
+				//both are used so no more place
+				break;
+			}
+		}
+	}
 	spin_unlock(&(si->swap_buddy_area)->lock);
 	return NULL;
 }
@@ -1331,8 +1421,10 @@ static unsigned long enlarge_vma_buddy_node(struct swap_info_struct *si, vma_swa
 	}
 	//traverse up the tree and mark all nodes as fragmented
 	while(parent){
-		parent = parent->parent;
 		parent->fragmented = true;
+		if(parent->right&&parent->right->used&&parent->left&&parent->left->used){
+			parent->used = true;
+		parent = parent->parent;
 	}
 	spin_unlock(&(si->swap_buddy_area)->lock);
 	vma_alloc_range(si, vma_buddy_node->node, swp_offset(vma_buddy_node->node->start_entry));
@@ -1392,6 +1484,10 @@ static bool vma_alloc_swap_entry(struct folio *folio, struct vm_area_struct *vma
 		node = vma_allocate_swap_buddy_node(rmap_data->si,folio, vma);
 	}
 	//for the time this cannot fail
+	if(!rmap_data || !rmap_data->entry || !rmap_data->si){
+		printk(KERN_ERR "vma_alloc_swap_entry: rmap_data/fields is NULL\n");
+		return false;
+	}
 	*(rmap_data->entry) = get_folio_entry_in_node(folio, node, vma, rmap_data->si);
 	// printk(KERN_INFO "vma_alloc_swap_entry: entry = %lx\n", (*rmap_data->entry).val);
 	return false;
@@ -1429,6 +1525,13 @@ int vma_alloc_swap(struct folio *folio, swp_entry_t *entry, struct swap_info_str
 			rmap_walk(folio, &rwc);
 
 	}
+	//assert that si->map[offset(entry)] is not 0
+	spin_lock(&si->lock);
+	if (si->swap_map[swp_offset(*entry)] == 0){
+		printk(KERN_ERR "for entry = %lx, si->swap_map[swp_offset(*entry)] = 0\n", (*entry).val);
+	}
+	spin_unlock(&si->lock);
+
 	// printk(KERN_INFO "vma_alloc_swap: entry = %lx\n", (*entry).val);
 	return 1;
 }
@@ -1645,15 +1748,22 @@ put_out:
 static unsigned char __swap_entry_free(struct swap_info_struct *si,
 				       swp_entry_t entry)
 {
-	struct swap_cluster_info *ci;
 	unsigned long offset = swp_offset(entry);
 	unsigned char usage;
-
+	#ifndef CONFIG_SWAP_VMA
+	struct swap_cluster_info *ci;
 	ci = lock_cluster(si, offset);
 	usage = __swap_entry_free_locked(si, offset, 1);
 	if (!usage)
 		swap_entry_range_free(si, ci, swp_entry(si->type, offset), 1);
 	unlock_cluster(ci);
+	#else
+	spin_lock(&si->lock);
+	usage = __swap_entry_free_locked(si, offset, 1);
+	if (!usage)
+		swap_entry_range_free(si, swp_entry(si->type, offset), 1);
+	spin_unlock(&si->lock);
+	#endif
 
 	return usage;
 }
@@ -1671,9 +1781,9 @@ static bool __swap_entries_free(struct swap_info_struct *si,
 	if (nr <= 1 || swap_count(data_race(si->swap_map[offset])) != 1)
 		goto fallback;
 	/* cross into another cluster */
+	#ifndef CONFIG_SWAP_VMA
 	if (nr > SWAPFILE_CLUSTER - offset % SWAPFILE_CLUSTER)
 		goto fallback;
-
 	ci = lock_cluster(si, offset);
 	if (!swap_is_last_map(si, offset, nr, &has_cache)) {
 		unlock_cluster(ci);
@@ -1684,7 +1794,18 @@ static bool __swap_entries_free(struct swap_info_struct *si,
 	if (!has_cache)
 		swap_entry_range_free(si, ci, entry, nr);
 	unlock_cluster(ci);
-
+	#else
+	spin_lock(&si->lock);
+	if (!swap_is_last_map(si, offset, nr, &has_cache)) {
+		spin_unlock(&si->lock);
+		goto fallback;
+	}
+	for (i = 0; i < nr; i++)
+		WRITE_ONCE(si->swap_map[offset + i], SWAP_HAS_CACHE);
+	if (!has_cache)
+		swap_entry_range_free(si, entry, nr);
+	spin_unlock(&si->lock);
+	#endif
 	return has_cache;
 
 fallback:
@@ -1704,6 +1825,7 @@ fallback:
  * Drop the last HAS_CACHE flag of swap entries, caller have to
  * ensure all entries belong to the same cgroup.
  */
+#ifndef CONFIG_SWAP_VMA
 static void swap_entry_range_free(struct swap_info_struct *si,
 				  struct swap_cluster_info *ci,
 				  swp_entry_t entry, unsigned int nr_pages)
@@ -1735,7 +1857,35 @@ static void swap_entry_range_free(struct swap_info_struct *si,
 		partial_free_cluster(si, ci);
 }
 }
+#else
+static void swap_entry_range_free(struct swap_info_struct *si,
+				  swp_entry_t entry, unsigned int nr_pages)
+{
+	unsigned long offset = swp_offset(entry);
+	unsigned char *map = si->swap_map + offset;
+	unsigned char *map_end = map + nr_pages;
 
+	/* It should never free entries across different clusters */
+	do {
+		VM_BUG_ON(*map != SWAP_HAS_CACHE);
+		*map = 0;
+	} while (++map < map_end);
+
+	mem_cgroup_uncharge_swap(entry, nr_pages);
+	swap_range_free(si, offset, nr_pages);
+}
+#endif
+
+static void vma_swap_free_nr(struct swap_info_struct *si,
+		unsigned long offset, int nr_pages,
+		unsigned char usage)
+{
+	spin_lock(&si->lock);
+	swap_range_free(si, offset, nr_pages);
+	spin_unlock(&si->lock);
+
+}
+#ifndef CONFIG_SWAP_VMA
 static void cluster_swap_free_nr(struct swap_info_struct *si,
 		unsigned long offset, int nr_pages,
 		unsigned char usage)
@@ -1750,6 +1900,7 @@ static void cluster_swap_free_nr(struct swap_info_struct *si,
 	} while (++offset < end);
 	unlock_cluster(ci);
 }
+#endif
 
 /*
  * Caller has made sure that the swap device corresponding to entry
@@ -1767,7 +1918,11 @@ void swap_free_nr(swp_entry_t entry, int nr_pages)
 
 	while (nr_pages) {
 		nr = min_t(int, nr_pages, SWAPFILE_CLUSTER - offset % SWAPFILE_CLUSTER);
+		#ifdef CONFIG_SWAP_VMA
+		vma_swap_free_nr(sis, offset, nr, 1);
+		#else
 		cluster_swap_free_nr(sis, offset, nr, 1);
+		#endif
 		offset += nr;
 		nr_pages -= nr;
 	}
@@ -1779,14 +1934,14 @@ void swap_free_nr(swp_entry_t entry, int nr_pages)
 void put_swap_folio(struct folio *folio, swp_entry_t entry)
 {
 	unsigned long offset = swp_offset(entry);
-	struct swap_cluster_info *ci;
 	struct swap_info_struct *si;
 	int size = 1 << swap_entry_order(folio_order(folio));
 
 	si = _swap_info_get(entry);
 	if (!si)
 		return;
-
+	#ifndef CONFIG_SWAP_VMA	
+	struct swap_cluster_info *ci;
 	ci = lock_cluster(si, offset);
 	if (swap_is_has_cache(si, offset, size))
 		swap_entry_range_free(si, ci, entry, size);
@@ -1797,6 +1952,18 @@ void put_swap_folio(struct folio *folio, swp_entry_t entry)
 		}
 	}
 	unlock_cluster(ci);
+	#else
+	spin_lock(&si->lock);
+	if (swap_is_has_cache(si, offset, size))
+		swap_entry_range_free(si, entry, size);
+	else {
+		for (int i = 0; i < size; i++, entry.val++) {
+			if (!__swap_entry_free_locked(si, offset + i, SWAP_HAS_CACHE))
+				swap_entry_range_free(si, entry, 1);
+		}
+	}
+	spin_unlock(&si->lock);
+	#endif
 }
 
 void swapcache_free_entries(swp_entry_t *entries, int n)
@@ -1811,9 +1978,15 @@ void swapcache_free_entries(swp_entry_t *entries, int n)
 	for (i = 0; i < n; ++i) {
 		si = _swap_info_get(entries[i]);
 		if (si) {
+			#ifndef CONFIG_SWAP_VMA
 			ci = lock_cluster(si, swp_offset(entries[i]));
 			swap_entry_range_free(si, ci, entries[i], 1);
 			unlock_cluster(ci);
+			#else
+			spin_lock(&si->lock);
+			swap_entry_range_free(si, entries[i], 1);
+			spin_unlock(&si->lock);
+			#endif
 		}
 	}
 }
@@ -3174,6 +3347,19 @@ static int swap_show(struct seq_file *swap, void *v)
 			seq_printf(swap,"SWP_UNKNOWN: %d\n",value);
 			break;
 		}}
+		#ifdef CONFIG_SWAP_VMA
+		//TODO print the tree
+		// swap_buddy_node_t *node = si->swap_buddy_area->root;
+		// seq_printf(swap,"start_entry:level:used:fragmented\n");
+		// while(node){
+		// 	swap_buddy_node_t *temp = node;
+		// 	while(node){
+		// 		seq_printf(swap,"%ld:%d:%d:%d ",swp_offset(node->start_entry),node->level,node->used,node->fragmented);
+		// 		node=node->next;
+		// 	}
+		// 	seq_puts(swap,"\n");
+		// 	node=temp->left;}
+		#else
 		seq_printf(swap,"CLUSTER_FLAG_NONE=%d",CLUSTER_FLAG_NONE);
 		seq_printf(swap," CLUSTER_FLAG_FREE=%d",CLUSTER_FLAG_FREE);
 		seq_printf(swap," CLUSTER_FLAG_NONFULL=%d",CLUSTER_FLAG_NONFULL);
@@ -3202,9 +3388,10 @@ static int swap_show(struct seq_file *swap, void *v)
 			}
 			seq_puts(swap,"\n");
 		}
+	#endif
 	// for (int offset = 0; offset < (si->pages); offset++) {
 	// 	ci = lock_cluster(si, offset);
-		printk("clusters[%d]: count=%d flag=%d\n",offset/512,ci->count,ci->flags);
+		// printk("clusters[%d]: count=%d flag=%d\n",offset/512,ci->count,ci->flags);
 	// 	unlock_cluster(ci);
 	// }
 
@@ -3493,61 +3680,8 @@ static struct swap_buddy_area *setup_vma_buddy_tree(struct swap_info_struct *si,
 	buddy_area->root->used = 0;
 	buddy_area->root->fragmented = 0;
 	buddy_area->root->parent = NULL;
-	buddy_area->root->next = NULL;
 	spin_lock_init(&buddy_area->root->lock);
-	swap_buddy_node_t* node = buddy_area->root;
-	//allocate the entire tree dfs
-	while(1){
-		if(node->level == 0){
-			printk(KERN_INFO "hit level %d for entry %lu \n",node->level, node->start_entry.val);
-			node = node->parent;
-			continue;
-		}
-		if(!node->right){
-			//right node is not allocated allocate and traverse in
-			node->right = kzalloc(sizeof(struct swap_buddy_node), GFP_KERNEL);
-			if (!node->right)
-				return ERR_PTR(-ENOMEM);
-			node->right->level = node->level - 1;
-			node->right->start_entry = swp_entry(si->type, node->start_entry.val + (1 << node->right->level));//double check this value
-			node->right->used = 0;
-			node->right->fragmented = 0;
-			node->right->parent = node;
-			//init a spin lock
-			spin_lock_init(&(node->right)->lock);
-			if(node->next)
-				node->right->next = node->next->left;
-			printk(KERN_INFO "allcated at level %d for entry %lu \n",node->right->level, node->right->start_entry.val);
-			node = node->right;
-			continue;	
-		}
-		if(!node->left)
-		{
-			//right is already allocated so left allocate left and traverse in
-			node->left = kzalloc(sizeof(struct swap_buddy_node), GFP_KERNEL);
-			if (!node->left)
-				return ERR_PTR(-ENOMEM);
-			node->left->level = node->level - 1;
-			node->left->start_entry = node->start_entry;
-			node->left->used = 0;
-			node->left->fragmented = 0;
-			node->left->parent = node;
-			node->left->next = node->right;
-			spin_lock_init(&(node->left)->lock);
-			printk(KERN_INFO "allcated at level %d for entry %lu \n",node->left->level, node->left->start_entry.val);
-			node = node->left;
-			continue;
-		}
-		// this means both of the nodes are allocated we go up
-		if(node->parent){
-			node = node->parent;
-			continue;
-		}
-		else{
-			// printk("got back to node at level %d for entry %lu \n",node->level, node->start_entry.val);
-			break;
-		}
-	}
+	printk(KERN_INFO "root's level is %d for entry %lu \n", buddy_area->root->level, buddy_area->root->start_entry.val);
 	return buddy_area;
 }
 static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
@@ -4079,8 +4213,11 @@ int swapcache_prepare(swp_entry_t entry, int nr)
 void swapcache_clear(struct swap_info_struct *si, swp_entry_t entry, int nr)
 {
 	unsigned long offset = swp_offset(entry);
-
+	#ifndef CONFIG_SWAP_VMA
 	cluster_swap_free_nr(si, offset, nr, SWAP_HAS_CACHE);
+	#else
+	vma_swap_free_nr(si, offset, nr, SWAP_HAS_CACHE);
+	#endif
 }
 
 struct swap_info_struct *swp_swap_info(swp_entry_t entry)

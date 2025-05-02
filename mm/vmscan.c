@@ -804,7 +804,8 @@ static int __remove_mapping(struct address_space *mapping, struct folio *folio,
 		if (free_folio)
 			free_folio(folio);
 	}
-
+	// printk("%s: folio %p removed from mapping %p\n", __func__,
+	// 	folio, mapping);
 	return 1;
 
 cannot_free:
@@ -1414,6 +1415,7 @@ retry:
 				}
 				goto activate_locked;
 			case PAGE_SUCCESS:
+				// printk("%s: writeback success\n", __func__);
 				if (nr_pages > 1 && !folio_test_large(folio)) {
 					sc->nr_scanned -= (nr_pages - 1);
 					nr_pages = 1;
