@@ -74,7 +74,7 @@
 				_CACHE_MASK | _PAGE_GLOBAL))
 
 #define MAX_SWAPFILES_CHECK() \
-		BUILD_BUG_ON(MAX_SWAPFILES_SHIFT != 5)
+		BUILD_BUG_ON(MAX_SWAPFILES_SHIFT != 12)
 
 extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))

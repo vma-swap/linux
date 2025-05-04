@@ -212,7 +212,7 @@ static inline void native_pgd_clear(pgd_t *pgd)
  * The offset is inverted by a binary not operation to make the high
  * physical bits set.
  */
-#define SWP_TYPE_BITS		5
+#define SWP_TYPE_BITS		12
 
 #define SWP_OFFSET_FIRST_BIT	(_PAGE_BIT_PROTNONE + 1)
 

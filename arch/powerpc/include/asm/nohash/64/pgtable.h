@@ -184,7 +184,7 @@ static inline void huge_ptep_set_wrprotect(struct mm_struct *mm,
 	BUILD_BUG_ON(MAX_SWAPFILES_SHIFT > SWP_TYPE_BITS); \
 	} while (0)
 
-#define SWP_TYPE_BITS 5
+#define SWP_TYPE_BITS 12
 #define __swp_type(x)		(((x).val >> 2) \
 				& ((1UL << SWP_TYPE_BITS) - 1))
 #define __swp_offset(x)		((x).val >> PTE_RPN_SHIFT)

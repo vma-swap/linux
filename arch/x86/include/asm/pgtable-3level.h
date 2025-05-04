@@ -161,7 +161,7 @@ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
  *
  *   E is the exclusive marker that is not stored in swap entries.
  */
-#define SWP_TYPE_BITS		5
+#define SWP_TYPE_BITS		12
 #define _SWP_TYPE_MASK ((1U << SWP_TYPE_BITS) - 1)
 
 #define SWP_OFFSET_FIRST_BIT	(_PAGE_BIT_PROTNONE + 1)
