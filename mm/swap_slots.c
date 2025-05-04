@@ -240,9 +240,11 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 		return 0;
 
 	cache->cur = 0;
+	#ifndef CONFIG_SWAP_VMA
 	if (swap_slot_cache_active)
 		cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE,
 					   cache->slots, 0);
+	#endif
 
 	trace_refill_swap_slots_cache(cache->slots, cache->nr);
 	return cache->nr;
@@ -264,9 +266,9 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 	#endif
 
  	#ifdef CONFIG_SWAP_VMA
-	printk(KERN_INFO "foli_alloc_swap: fetching a swap entry for folio = %lx\n", folio_index(folio));
+	// printk(KERN_INFO "foli_alloc_swap: fetching a swap entry for folio = %lx\n", folio);
 	get_swap_pages(1, &entry, folio_order(folio),folio);
-	printk(KERN_INFO "foli_alloc_swap: found swap entry val %lu\n", entry.val);
+	// printk(KERN_INFO "foli_alloc_swap: found swap entry val %lu\n", entry.val);
 	goto out;
 	#endif
 	/*
