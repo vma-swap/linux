@@ -452,14 +452,19 @@ static inline struct swap_cluster_info *lock_cluster(struct swap_info_struct *si
 	struct swap_cluster_info *ci;
 
 	ci = offset_to_cluster(si, offset);
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 	spin_lock(&ci->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
+
 
 	return ci;
 }
 
 static inline void unlock_cluster(struct swap_cluster_info *ci)
 {
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 	spin_unlock(&ci->lock);
+
 }
 
 static void move_cluster(struct swap_info_struct *si,
@@ -471,11 +476,15 @@ static void move_cluster(struct swap_info_struct *si,
 	BUILD_BUG_ON(1 << sizeof(ci->flags) * BITS_PER_BYTE < CLUSTER_FLAG_MAX);
 	lockdep_assert_held(&ci->lock);
 
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	if (ci->flags == CLUSTER_FLAG_NONE)
 		list_add_tail(&ci->list, list);
 	else
 		list_move_tail(&ci->list, list);
+
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_unlock(&si->lock);
 
 	if (ci->flags == CLUSTER_FLAG_FRAG)
@@ -524,15 +533,20 @@ static struct swap_cluster_info *isolate_lock_cluster(
 {
 	struct swap_cluster_info *ci, *ret = NULL;
 
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 
 	if (unlikely(!(si->flags & SWP_WRITEOK)))
 		goto out;
 
 	list_for_each_entry(ci, list, list) {
-		if (!spin_trylock(&ci->lock))
+		// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
+		if (!spin_trylock(&ci->lock)){
+			// printk(KERN_INFO "%s:%d [CPU:%d] failed to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 			continue;
-
+		}
+		// printk(KERN_INFO "%s:%d [CPU:%d] locked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 		/* We may only isolate and clear flags of following lists */
 		VM_BUG_ON(!ci->flags);
 		VM_BUG_ON(ci->flags > CLUSTER_FLAG_USABLE &&
@@ -544,6 +558,8 @@ static struct swap_cluster_info *isolate_lock_cluster(
 		break;
 	}
 out:
+
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_unlock(&si->lock);
 
 	return ret;
@@ -561,7 +577,9 @@ static bool swap_do_scheduled_discard(struct swap_info_struct *si)
 	bool ret = false;
 	unsigned int idx;
 
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	while (!list_empty(&si->discard_clusters)) {
 		ci = list_first_entry(&si->discard_clusters, struct swap_cluster_info, list);
 		/*
@@ -571,11 +589,15 @@ static bool swap_do_scheduled_discard(struct swap_info_struct *si)
 		 */
 		list_del(&ci->list);
 		idx = cluster_index(si, ci);
+		// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 		spin_unlock(&si->lock);
+
 		discard_swap_cluster(si, idx * SWAPFILE_CLUSTER,
 				SWAPFILE_CLUSTER);
-
+		// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 		spin_lock(&ci->lock);
+		// printk(KERN_INFO "%s:%d [CPU:%d] locked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
+
 		/*
 		 * Discard is done, clear its flags as it's off-list, then
 		 * return the cluster to allocation list.
@@ -584,10 +606,15 @@ static bool swap_do_scheduled_discard(struct swap_info_struct *si)
 		memset(si->swap_map + idx * SWAPFILE_CLUSTER,
 				0, SWAPFILE_CLUSTER);
 		__free_cluster(si, ci);
+		// printk(KERN_INFO "%s:%d [CPU:%d] unlocked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 		spin_unlock(&ci->lock);
+
 		ret = true;
+		// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 		spin_lock(&si->lock);
+		// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	}
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_unlock(&si->lock);
 	return ret;
 }
@@ -701,7 +728,9 @@ static bool cluster_reclaim_range(struct swap_info_struct *si,
 	unsigned long offset = start;
 	int nr_reclaim;
 
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 	spin_unlock(&ci->lock);
+
 	do {
 		switch (READ_ONCE(map[offset])) {
 		case 0:
@@ -718,8 +747,11 @@ static bool cluster_reclaim_range(struct swap_info_struct *si,
 			goto out;
 		}
 	} while (offset < end);
-out:
+out:		
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 	spin_lock(&ci->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
+
 	/*
 	 * Recheck the range no matter reclaim succeeded or not, the slot
 	 * could have been be freed while we are not holding the lock.
@@ -856,10 +888,15 @@ static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 
 		while (offset < end) {
 			if (READ_ONCE(map[offset]) == SWAP_HAS_CACHE) {
+				// printk(KERN_INFO "%s:%d [CPU:%d] unlocked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 				spin_unlock(&ci->lock);
+
 				nr_reclaim = __try_to_reclaim_swap(si, offset,
 								   TTRS_ANYWAY | TTRS_DIRECT);
+				// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
 				spin_lock(&ci->lock);
+				// printk(KERN_INFO "%s:%d [CPU:%d] locked ci=%p",__FILE__,__LINE__,smp_processor_id(),ci);
+
 				if (nr_reclaim) {
 					offset += abs(nr_reclaim);
 					continue;
@@ -1259,12 +1296,12 @@ static bool vma_get_swap_info(struct folio *folio, struct vm_area_struct *vma,
 {
 	// printk(KERN_INFO "testing if vma has si. vma: %p\n", vma);
 	struct vma_rmap_data *rmap_data = arg;
-	if(!vma->si){
+	if(!READ_ONCE(vma->si)){
 		// printk(KERN_INFO "vma has no swap info. vma: %p\n", vma);
 		return true;
 	}
 	// printk(KERN_INFO "vma has swap info. vma: %p\n", vma);
-	rmap_data->si = vma->si;
+	rmap_data->si = READ_ONCE(vma->si);
 	return false;
 
 }
@@ -1274,10 +1311,10 @@ static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
 	// printk(KERN_INFO "testing if vma has si. vma: %p\n", vma);
 	struct vma_rmap_data *rmap_data = arg;
 	if(!rmap_data->si){
-		// printk(KERN_INFO "trying to set vma with a null si (should not happen). vma: %p\n", vma);
+		// printk(KERN_INFO "trying to set vma with a non null si (should not happen). vma: %p\n", vma);
 		return false;
 	}
-	vma->si= rmap_data->si;
+	rmap_data->si = cmpxchg(&vma->si, NULL, rmap_data->si);
 	return false;
 }
 
@@ -1300,8 +1337,8 @@ struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 		rmap_walk(folio, &rwc);
 	return data.si;
 }
-
-void set_swap_info_for_folio(struct folio *folio,struct swap_info_struct *si)
+//returns the actual si set
+struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,struct swap_info_struct *si)
 {
 	struct vma_rmap_data data = {
 		.si = si,
@@ -1318,6 +1355,7 @@ void set_swap_info_for_folio(struct folio *folio,struct swap_info_struct *si)
 		rmap_walk_locked(folio, &rwc);
 	else
 		rmap_walk(folio, &rwc);
+	return data.si;
 }
 
 #ifdef CONFIG_SWAP_VMA
@@ -1382,12 +1420,10 @@ start_over:
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		#ifdef CONFIG_SWAP_VMA
-		del_from_avail_list_locked(si, false);
-		spin_unlock(&swap_avail_lock);
-		set_swap_info_for_folio(folio, si);
-		#else
-		spin_unlock(&swap_avail_lock);
+		if(si==set_swap_info_for_folio(folio, si))
+			del_from_avail_list_locked(si, false);
 		#endif
+		spin_unlock(&swap_avail_lock);
 		if (get_swap_device_info(si)) {
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order);
@@ -2725,28 +2761,40 @@ static void enable_swap_info(struct swap_info_struct *si, int prio,
 				unsigned long *zeromap)
 {
 	spin_lock(&swap_lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	setup_swap_info(si, prio, swap_map, cluster_info, zeromap);
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_unlock(&si->lock);
+
 	spin_unlock(&swap_lock);
 	/*
 	 * Finished initializing swap device, now it's safe to reference it.
 	 */
 	percpu_ref_resurrect(&si->users);
 	spin_lock(&swap_lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	_enable_swap_info(si);
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_unlock(&si->lock);
+
 	spin_unlock(&swap_lock);
 }
 
 static void reinsert_swap_info(struct swap_info_struct *si)
 {
 	spin_lock(&swap_lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	spin_lock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 	setup_swap_info(si, si->prio, si->swap_map, si->cluster_info, si->zeromap);
 	_enable_swap_info(si);
 	spin_unlock(&si->lock);
+	// printk(KERN_INFO "%s:%d [CPU:%d] unlocked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
+
 	spin_unlock(&swap_lock);
 }
 
@@ -3642,6 +3690,11 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		atomic_inc(&nr_rotate_swap);
 		inced_nr_rotate_swap = true;
 	}
+	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
+		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
+		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
+	}
+	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
 
 	cluster_info = setup_clusters(si, swap_header, maxpages);
 	if (IS_ERR(cluster_info)) {
@@ -3649,11 +3702,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		cluster_info = NULL;
 		goto bad_swap_unlock_inode;
 	}
-	if (swap_flags & SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW){
-		printk(KERN_INFO "swapon: setting swap_flag_arrange_clusters_by_row\n");
-		si->flags |= SWP_ARRANGE_CLUSTERS_BY_ROW;
-	}
-	printk(KERN_INFO "swapon: arraning by rows? %d\n",si->flags & SWP_ARRANGE_CLUSTERS_BY_ROW);
 	if ((swap_flags & SWAP_FLAG_DISCARD) &&
 	    si->bdev && bdev_max_discard_sectors(si->bdev)) {
 		/*
