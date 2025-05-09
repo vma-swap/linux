@@ -534,6 +534,7 @@ static struct swap_cluster_info *isolate_lock_cluster(
 	struct swap_cluster_info *ci, *ret = NULL;
 
 	// printk(KERN_INFO "%s:%d [CPU:%d] attempt to lock si=%p",__FILE__,__LINE__,smp_processor_id(),si);
+	lockdep_assert_not_held(&si->lock);
 	spin_lock(&si->lock);
 	// printk(KERN_INFO "%s:%d [CPU:%d] locked si=%p",__FILE__,__LINE__,smp_processor_id(),si);
 
@@ -881,6 +882,7 @@ static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 	if (force)
 		to_scan = swap_usage_in_pages(si) / SWAPFILE_CLUSTER;
 
+	lockdep_assert_not_held(&si->lock);
 	while ((ci = isolate_lock_cluster(si, &si->full_clusters))) {
 		offset = cluster_offset(si, ci);
 		end = min(si->max, offset + SWAPFILE_CLUSTER);
@@ -916,7 +918,7 @@ static void swap_reclaim_work(struct work_struct *work)
 	struct swap_info_struct *si;
 
 	si = container_of(work, struct swap_info_struct, reclaim_work);
-
+	lockdep_assert_not_held(&si->lock);
 	swap_reclaim_full_clusters(si, true);
 }
 
@@ -930,6 +932,7 @@ static unsigned long cluster_alloc_swap_entry(struct swap_info_struct *si, int o
 {
 	struct swap_cluster_info *ci;
 	unsigned int offset, found = 0;
+	lockdep_assert_not_held(&si->lock);
 
 	if (si->flags & SWP_SOLIDSTATE) {
 		/* Fast path using per CPU cluster */
@@ -1086,7 +1089,7 @@ static void del_from_avail_list_locked(struct swap_info_struct *si, bool swapoff
 {
 	int nid;
 	unsigned long pages;
-	printk("del_from_avail_list_locked: si=%p swapoff=%d\n", si, swapoff);
+	printk(KERN_INFO "%s:%s:%d [CPU:%d] deleting si from avail list. si=%p swapoff=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,swapoff);
 	for_each_node(nid)
 		plist_del(&si->avail_lists[nid], &swap_avail_heads[nid]);
 
@@ -1222,6 +1225,7 @@ static int cluster_alloc_swap(struct swap_info_struct *si,
 			     swp_entry_t slots[], int order)
 {
 	int n_ret = 0;
+	lockdep_assert_not_held(&si->lock);
 
 	while (n_ret < nr) {
 		unsigned long offset = cluster_alloc_swap_entry(si, order, usage);
@@ -1250,6 +1254,7 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 	 * But we do now try to find an empty cluster.  -Andrea
 	 * And we let swap pages go all over an SSD partition.  Hugh
 	 */
+	lockdep_assert_not_held(&si->lock);
 	if (order > 0) {
 		/*
 		 * Should not even be attempting large allocations when huge
@@ -1296,13 +1301,8 @@ static bool vma_get_swap_info(struct folio *folio, struct vm_area_struct *vma,
 {
 	// printk(KERN_INFO "testing if vma has si. vma: %p\n", vma);
 	struct vma_rmap_data *rmap_data = arg;
-	if(!READ_ONCE(vma->si)){
-		// printk(KERN_INFO "vma has no swap info. vma: %p\n", vma);
-		return true;
-	}
-	// printk(KERN_INFO "vma has swap info. vma: %p\n", vma);
-	rmap_data->si = READ_ONCE(vma->si);
-	return false;
+	rmap_data->si=READ_ONCE(vma->si);
+	return rmap_data->si == NULL;
 
 }
 static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
@@ -1311,10 +1311,13 @@ static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
 	// printk(KERN_INFO "testing if vma has si. vma: %p\n", vma);
 	struct vma_rmap_data *rmap_data = arg;
 	if(!rmap_data->si){
-		// printk(KERN_INFO "trying to set vma with a non null si (should not happen). vma: %p\n", vma);
+		printk(KERN_INFO "%s:%s:%d [CPU:%d] trying to set folio with null si. si= %p folio= %p",__FILE__,__func__,__LINE__,smp_processor_id(),rmap_data->si,folio);
 		return false;
 	}
-	rmap_data->si = cmpxchg(&vma->si, NULL, rmap_data->si);
+	printk(KERN_INFO "%s:%s:%d [CPU:%d] trying to set vma with si. si=%p vma=%p folio=%p\n",__FILE__,__func__,__LINE__,smp_processor_id(),rmap_data->si,vma,folio);
+	cmpxchg(&vma->si, NULL, rmap_data->si);
+	rmap_data->si=READ_ONCE(vma->si);
+	printk(KERN_INFO "%s:%s:%d [CPU:%d] vma has is. si=%p vma=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),rmap_data->si,vma,folio);
 	return false;
 }
 
@@ -1363,7 +1366,8 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struc
 {
 	struct swap_info_struct *si = get_swap_info_from_folio(folio);
 	// if(si)
-	// 	printk(KERN_INFO "found si for folio. si= %p folio= %p\n", si, folio);
+	// 	printk(KERN_INFO "%s:%s:%d [CPU:%d] found si for folio. si= %p folio= %p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
+
 	struct swap_info_struct *next;
 #else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
@@ -1394,6 +1398,7 @@ start_over:
 	if(si){
 		spin_unlock(&swap_avail_lock);
 		if (get_swap_device_info(si)) {
+			lockdep_assert_not_held(&si->lock);
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order);
 			put_swap_device(si);
@@ -1420,16 +1425,27 @@ start_over:
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		#ifdef CONFIG_SWAP_VMA
-		if(si==set_swap_info_for_folio(folio, si))
+		printk(KERN_INFO "%s:%s:%d [CPU:%d] setting folio with si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
+		struct swap_info_struct *actual_si = set_swap_info_for_folio(folio, si);
+		printk(KERN_INFO "%s:%s:%d [CPU:%d] actual si for folio si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
+		if(si==actual_si)
 			del_from_avail_list_locked(si, false);
+		else
+			si = actual_si;
+		printk(KERN_INFO "%s:%s:%d [CPU:%d] folio has si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
 		#endif
 		spin_unlock(&swap_avail_lock);
 		if (get_swap_device_info(si)) {
+			lockdep_assert_not_held(&si->lock);
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order);
 			put_swap_device(si);
 			if (n_ret || size > 1)
 				goto check_out;
+		}
+		else
+		{
+			printk(KERN_INFO "%s:%s:%d [CPU:%d] failed getting swap info. BUG si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
 		}
 
 		spin_lock(&swap_avail_lock);
