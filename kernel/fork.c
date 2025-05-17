@@ -503,7 +503,10 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	INIT_LIST_HEAD(&new->anon_vma_chain);
 	vma_numab_state_init(new);
 	dup_anon_vma_name(orig, new);
-
+	#ifdef CONFIG_SWAP_VMA
+	new->si=NULL;
+	spin_lock_init(&new->swap_lock);
+	#endif
 	return new;
 }
 

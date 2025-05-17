@@ -266,9 +266,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 	#endif
 
  	#ifdef CONFIG_SWAP_VMA
-	// printk(KERN_INFO "foli_alloc_swap: fetching a swap entry for folio = %lx\n", folio);
 	get_swap_pages(1, &entry, folio_order(folio),folio);
-	// printk(KERN_INFO "foli_alloc_swap: found swap entry val %lu\n", entry.val);
 	goto out;
 	#endif
 	/*
@@ -309,5 +307,6 @@ out:
 		put_swap_folio(folio, entry);
 		entry.val = 0;
 	}
+	trace_folio_alloc_swap(folio, swp_offset(entry), swp_type(entry));
 	return entry;
 }

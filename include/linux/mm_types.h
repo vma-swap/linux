@@ -786,6 +786,7 @@ struct vm_area_struct {
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
 #ifdef CONFIG_SWAP_VMA
    	struct swap_info_struct *si; // each VMA is connected to a swap struct
+	spinlock_t swap_lock; // protects vma->si
 #endif
 } __randomize_layout;
 

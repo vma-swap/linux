@@ -4455,7 +4455,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		ret = VM_FAULT_HWPOISON;
 		goto out_release;
 	}
-
+	trace_do_swap_page(vma, vmf->address, swp_type(entry),swp_offset(entry), folio);
 	ret |= folio_lock_or_retry(folio, vmf);
 	if (ret & VM_FAULT_RETRY)
 		goto out_release;

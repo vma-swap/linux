@@ -499,6 +499,7 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma_mark_detached(vma, false);
 	#ifdef CONFIG_SWAP_VMA
 	vma->si=NULL;
+	spin_lock_init(&vma->swap_lock);
 	#endif
 }
 
@@ -533,6 +534,7 @@ static inline struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	INIT_LIST_HEAD(&new->anon_vma_chain);
 	#ifdef CONFIG_SWAP_VMA
 	new->si=NULL;
+	spin_lock_init(&new->swap_lock);
 	#endif
 	return new;
 }

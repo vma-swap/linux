@@ -863,6 +863,10 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	memset(vma, 0, sizeof(*vma));
 	vma->vm_mm = mm;
 	vma->vm_ops = &vma_dummy_vm_ops;
+	#ifdef CONFIG_SWAP_VMA
+	vma->si=NULL;
+	spin_lock_init(&vma->swap_lock);
+	#endif
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma_mark_detached(vma, false);
 	vma_numab_state_init(vma);

@@ -8,6 +8,8 @@
 #include <linux/types.h>
 #include <linux/swap.h>
 #include <linux/stacktrace.h>
+#include <linux/swapops.h>
+#include <linux/mm.h>
 
 TRACE_EVENT(swap_entry_alloc_from_cache,
     TP_PROTO(swp_entry_t swp_entry, swp_entry_t	*slots, 
@@ -172,32 +174,6 @@ TRACE_EVENT(swap_range_free,
     TP_printk("si_flags=%x offset=%x end=%x",
               __entry->si_flags, __entry->offset, __entry->end)
 );
-TRACE_EVENT(swap_free_cluster,
-    TP_PROTO(struct swap_info_struct *si, struct swap_cluster_info *ci, unsigned int offset),
-
-    TP_ARGS(si, ci, offset),
-    
-    TP_STRUCT__entry(
-        __field(unsigned int, ci_count)
-        __field(unsigned int, ci_flags)
-        __field(unsigned int, ci_order)
-        __field(unsigned int, si_flags)
-        __field(unsigned int, offset)
-   
-    ),
-
-    TP_fast_assign(
-        __entry->ci_count = ci->count;
-        __entry->ci_flags = ci->flags;
-        __entry->ci_order = ci->order;
-        __entry->si_flags = si->flags;
-        __entry->offset = offset;
-           /* Capture the stack trace */
-    ),
-
-    TP_printk("ci_count=%d ci_flags=%x ci_order=%d si_flags=%x offset=%x",
-    __entry->ci_count, __entry->ci_flags, __entry->ci_order)
-);
 TRACE_EVENT(swap_partial_free_cluster,
     TP_PROTO(struct swap_info_struct *si, struct swap_cluster_info *ci, unsigned int offset),
 
@@ -300,6 +276,154 @@ TP_fast_assign(
 ),
 TP_printk("vm_swap_full=%d usage=%lu high=%lu max=%lu",
           __entry->vm_swap_full, __entry->usage, __entry->high, __entry->max)
+);
+TRACE_EVENT(folio_alloc_swap,
+TP_PROTO( struct folio *folio, pgoff_t offset, unsigned long type),
+TP_ARGS(folio, offset, type),
+TP_STRUCT__entry(
+    __field(struct folio *, folio)
+    __field(pgoff_t, offset)
+    __field(unsigned long, type)
+),
+TP_fast_assign(
+    __entry->folio = folio;
+    __entry->offset = offset;
+    __entry->type = type;
+),
+TP_printk("entry for folio folio=%p swp_offset=%ld swp_type=%ld.",
+          __entry->folio, __entry->offset, __entry->type)
+);
+TRACE_EVENT(get_swap_pages,
+TP_PROTO( int n_ret, struct swap_info_struct* si, pgoff_t offset, unsigned long type),
+TP_ARGS(n_ret, si, offset, type),
+TP_STRUCT__entry(
+    __field(int, n_ret)
+    __field(struct swap_info_struct*, si)
+    __field(pgoff_t, offset)    
+    __field(unsigned long, type)
+),
+TP_fast_assign(
+    __entry->n_ret = n_ret;
+    __entry->si = si;
+    __entry->offset = offset;
+    __entry->type = type;
+),
+TP_printk("n_ret=%d si=%p swap_offset=%ld swap_type=%ld.",
+          __entry->n_ret, __entry->si, __entry->offset, __entry->type)
+);
+TRACE_EVENT(get_swap_info_from_folio,
+TP_PROTO( struct folio *folio, struct swap_info_struct* si, int index),
+TP_ARGS(folio, si, index),
+TP_STRUCT__entry(
+    __field(struct folio *, folio)
+    __field(struct swap_info_struct*, si)
+    __field(int, index)
+),
+TP_fast_assign(
+    __entry->folio = folio;
+    __entry->si = si;
+    __entry->index = index;
+),
+TP_printk("folio=%p si=%p index=%d.",
+          __entry->folio, __entry->si, __entry->index)
+);
+TRACE_EVENT(vma_get_swap_info,
+TP_PROTO(struct vm_area_struct *vma, struct swap_info_struct* si, struct folio *folio, int index, unsigned long address),
+TP_ARGS(vma, si, folio, index, address),
+TP_STRUCT__entry(
+    __field(struct vm_area_struct *, vma)
+    __field(struct swap_info_struct*, si)
+    __field(struct folio *, folio)
+    __field(int, index)
+    __field(unsigned long, address)
+),
+TP_fast_assign(
+    __entry->vma = vma;
+    __entry->si = si;
+    __entry->folio = folio;
+    __entry->index = index;
+    __entry->address = address;
+),
+TP_printk("vma=%p si=%p folio=%p index=%d address=%lx.",
+          __entry->vma, __entry->si, __entry->folio, __entry->index, __entry->address)
+);
+TRACE_EVENT(get_swap_index_for_folio,
+TP_PROTO(struct vm_area_struct* vma, struct folio *folio, int index, unsigned long address),
+TP_ARGS(vma, folio, index, address),
+TP_STRUCT__entry(
+    __field(struct vm_area_struct*, vma)
+    __field(struct folio *, folio)
+    __field(int, index)
+    __field(unsigned long, address)
+),
+TP_fast_assign(
+    __entry->vma = vma;
+    __entry->folio = folio;
+    __entry->index = index;
+    __entry->address = address;
+),
+TP_printk("vma=%p folio=%p index=%d address=%lx",
+          __entry->vma, __entry->folio, __entry->index, __entry->address)
+);
+TRACE_EVENT(vma_set_swap_info,
+TP_PROTO( struct vm_area_struct *vma, struct swap_info_struct* actual_si,struct swap_info_struct* attempt_si, struct folio *folio, int index, unsigned long address),
+TP_ARGS(vma, actual_si, attempt_si, folio, index, address),
+TP_STRUCT__entry(
+    __field(struct vm_area_struct *, vma)
+    __field(struct swap_info_struct*, actual_si)
+    __field(struct swap_info_struct*, attempt_si)
+    __field(struct folio *, folio)
+    __field(int, index)
+    __field(unsigned long, address)
+),
+TP_fast_assign(
+    __entry->vma = vma;
+    __entry->actual_si = actual_si;
+    __entry->attempt_si = attempt_si;
+    __entry->folio = folio;
+    __entry->index = index;
+    __entry->address = address;
+),
+TP_printk("vma=%p actual_si=%p attempt_si=%p folio=%p index=%d address=%lx.",
+          __entry->vma, __entry->actual_si, __entry->attempt_si, __entry->folio, __entry->index, __entry->address)
+);
+TRACE_EVENT(vma_alloc_range,
+TP_PROTO( struct swap_info_struct* si, unsigned long start, unsigned char usage, unsigned int order),
+TP_ARGS(si, start, usage, order),
+TP_STRUCT__entry(
+    __field(struct swap_info_struct*, si)
+    __field(unsigned long, start)
+    __field(unsigned char, usage)
+    __field(unsigned int, order)
+),
+TP_fast_assign(
+    __entry->si = si;
+    __entry->start = start;
+    __entry->usage = usage;
+    __entry->order = order;
+),
+TP_printk("si=%p start=%lx usage=%x order=%x.",
+          __entry->si, __entry->start, __entry->usage, __entry->order)
+);
+TRACE_EVENT(do_swap_page,
+TP_PROTO(struct vm_area_struct *vma, unsigned long address, unsigned long type, pgoff_t offset, struct folio *folio),
+TP_ARGS(vma, address, type, offset, folio),
+TP_STRUCT__entry(
+    __field(struct vm_area_struct*, vma)
+    __field(unsigned long, address)
+    __field(unsigned long, type)
+    __field(pgoff_t, offset)
+    __field(struct folio *, folio)
+),
+TP_fast_assign(
+    __entry->vma = vma;
+    __entry->address = address;
+    __entry->type = type;
+    __entry->offset = offset;
+    __entry->folio = folio;
+),
+TP_printk("vma=%p address=%lx type=%lx offset=%ld folio=%p.",
+          __entry->vma, __entry->address, __entry->type, __entry->offset, __entry->folio)
 );
 #endif /* _TRACE_SWAP_H */
 
