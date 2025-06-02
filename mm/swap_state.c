@@ -25,6 +25,7 @@
 #include <linux/shmem_fs.h>
 #include "internal.h"
 #include "swap.h"
+#include <trace/events/swap.h>
 
 /*
  * swapper_space is a fiction, retained to simplify the path through
@@ -336,7 +337,11 @@ void free_pages_and_swap_cache(struct encoded_page **pages, int nr)
 
 static inline bool swap_use_vma_readahead(void)
 {
+	#ifdef CONFIG_SWAP_VMA
+	return READ_ONCE(enable_vma_readahead);
+	#else
 	return READ_ONCE(enable_vma_readahead) && !atomic_read(&nr_rotate_swap);
+	#endif
 }
 
 /*
@@ -437,7 +442,6 @@ struct folio *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	struct folio *new_folio = NULL;
 	struct folio *result = NULL;
 	void *shadow = NULL;
-
 	*new_page_allocated = false;
 	si = get_swap_device(entry);
 	if (!si)
@@ -452,8 +456,10 @@ struct folio *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 */
 		folio = filemap_get_folio(swap_address_space(entry),
 					  swap_cache_index(entry));
-		if (!IS_ERR(folio))
+		if (!IS_ERR(folio)){
+			trace_read_swap_cache_async(si, swp_type(entry), swp_offset(entry),true);
 			goto got_folio;
+		}
 
 		/*
 		 * Just skip read ahead for unused swap slot.
@@ -530,6 +536,8 @@ struct folio *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	folio_add_lru(new_folio);
 	*new_page_allocated = true;
 	folio = new_folio;
+	trace_read_swap_cache_async(si, swp_type(entry), swp_offset(entry),false);
+
 got_folio:
 	result = folio;
 	goto put_and_return;
@@ -630,7 +638,7 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 	if (!hits)
 		WRITE_ONCE(prev_offset, offset);
 	atomic_set(&last_readahead_pages, pages);
-
+	trace_swapin_nr_pages(pages, offset, hits, max_pages);
 	return pages;
 }
 
@@ -664,6 +672,7 @@ struct folio *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 	struct blk_plug plug;
 	struct swap_iocb *splug = NULL;
 	bool page_allocated;
+	trace_swap_cluster_readahead(si, swp_type(entry), swp_offset(entry));
 
 	mask = swapin_nr_pages(offset) - 1;
 	if (!mask)
@@ -748,8 +757,12 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	unsigned long ra_val;
 	unsigned long faddr, prev_faddr, left, right;
 	unsigned int max_win, hits, prev_win, win;
-
+	#ifdef CONFIG_SWAP_VMA
+	max_win = 1 << SWAP_RA_ORDER_CEILING;
+	#else
 	max_win = 1 << min(READ_ONCE(page_cluster), SWAP_RA_ORDER_CEILING);
+	#endif
+
 	if (max_win == 1)
 		return 1;
 
@@ -775,7 +788,7 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 		left = 0;
 	*start = max3(left, vma->vm_start, faddr & PMD_MASK);
 	*end = min3(right, vma->vm_end, (faddr & PMD_MASK) + PMD_SIZE);
-
+	trace_swap_vma_ra_win(vmf, *start, *end, faddr, prev_faddr, hits, win);
 	return win;
 }
 
@@ -807,7 +820,7 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 	swp_entry_t entry;
 	pgoff_t ilx;
 	bool page_allocated;
-
+	trace_swap_vma_readahead(swp_type(targ_entry), swp_offset(targ_entry),vmf);
 	win = swap_vma_ra_win(vmf, &start, &end);
 	if (win == 1)
 		goto skip;

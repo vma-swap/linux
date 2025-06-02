@@ -4374,8 +4374,10 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		goto out;
 
 	folio = swap_cache_get_folio(entry, vma, vmf->address);
-	if (folio)
+	if (folio){
+		trace_do_swap_page(vma, vmf->address, swp_type(entry),swp_offset(entry), folio, 2);
 		page = folio_file_page(folio, swp_offset(entry));
+	}
 	swapcache = folio;
 
 	if (!folio) {
@@ -4383,6 +4385,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		    __swap_count(entry) == 1) {
 			/* skip swapcache */
 			folio = alloc_swap_folio(vmf);
+			trace_do_swap_page(vma, vmf->address, swp_type(entry),swp_offset(entry), folio, true);
 			if (folio) {
 				__folio_set_locked(folio);
 				__folio_set_swapbacked(folio);
@@ -4427,6 +4430,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			folio = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE,
 						vmf);
 			swapcache = folio;
+			trace_do_swap_page(vma, vmf->address, swp_type(entry),swp_offset(entry), folio, false);
 		}
 
 		if (!folio) {
@@ -4455,7 +4459,6 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		ret = VM_FAULT_HWPOISON;
 		goto out_release;
 	}
-	trace_do_swap_page(vma, vmf->address, swp_type(entry),swp_offset(entry), folio);
 	ret |= folio_lock_or_retry(folio, vmf);
 	if (ret & VM_FAULT_RETRY)
 		goto out_release;

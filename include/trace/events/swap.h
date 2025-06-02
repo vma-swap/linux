@@ -290,7 +290,7 @@ TP_fast_assign(
     __entry->offset = offset;
     __entry->type = type;
 ),
-TP_printk("entry for folio folio=%p swp_offset=%ld swp_type=%ld.",
+TP_printk("entry for folio folio=%p swp_offset=%ld swp_type=%lx.",
           __entry->folio, __entry->offset, __entry->type)
 );
 TRACE_EVENT(get_swap_pages,
@@ -308,7 +308,7 @@ TP_fast_assign(
     __entry->offset = offset;
     __entry->type = type;
 ),
-TP_printk("n_ret=%d si=%p swap_offset=%ld swap_type=%ld.",
+TP_printk("n_ret=%d si=%p swap_offset=%ld swap_type=%lx.",
           __entry->n_ret, __entry->si, __entry->offset, __entry->type)
 );
 TRACE_EVENT(get_swap_info_from_folio,
@@ -406,14 +406,15 @@ TP_printk("si=%p start=%lx usage=%x order=%x.",
           __entry->si, __entry->start, __entry->usage, __entry->order)
 );
 TRACE_EVENT(do_swap_page,
-TP_PROTO(struct vm_area_struct *vma, unsigned long address, unsigned long type, pgoff_t offset, struct folio *folio),
-TP_ARGS(vma, address, type, offset, folio),
+TP_PROTO(struct vm_area_struct *vma, unsigned long address, unsigned long type, pgoff_t offset, struct folio *folio, char is_sync),
+TP_ARGS(vma, address, type, offset, folio, is_sync),
 TP_STRUCT__entry(
     __field(struct vm_area_struct*, vma)
     __field(unsigned long, address)
     __field(unsigned long, type)
     __field(pgoff_t, offset)
     __field(struct folio *, folio)
+    __field(char, is_sync)
 ),
 TP_fast_assign(
     __entry->vma = vma;
@@ -421,10 +422,105 @@ TP_fast_assign(
     __entry->type = type;
     __entry->offset = offset;
     __entry->folio = folio;
+    __entry->is_sync = is_sync;
 ),
-TP_printk("vma=%p address=%lx type=%lx offset=%ld folio=%p.",
-          __entry->vma, __entry->address, __entry->type, __entry->offset, __entry->folio)
+TP_printk("vma=%p address=%lx type=%lx offset=%ld folio=%p is_sync=%d (0=not sync, 1=sync, 2=cached).",
+          __entry->vma, __entry->address, __entry->type, __entry->offset, __entry->folio, __entry->is_sync)
 );
+TRACE_EVENT(read_swap_cache_async,
+TP_PROTO(struct swap_info_struct *si, unsigned long type, unsigned long offset, int is_cached),
+TP_ARGS(si, type, offset, is_cached),
+TP_STRUCT__entry(
+    __field(struct swap_info_struct*, si)
+    __field(unsigned long, type)
+    __field(unsigned long, offset)
+    __field(int, is_cached)
+),
+TP_fast_assign(
+    __entry->si = si;
+    __entry->type = type;
+    __entry->offset = offset;
+    __entry->is_cached = is_cached;
+
+),
+TP_printk("si=%p type=%lx offset=%lx is_cached=%d.",
+          __entry->si, __entry->type, __entry->offset, __entry->is_cached)
+);
+TRACE_EVENT(swapin_nr_pages,
+TP_PROTO(unsigned int pages, unsigned long offset, unsigned int hits, unsigned int max_pages),
+TP_ARGS(pages, offset, hits, max_pages),
+TP_STRUCT__entry(
+    __field(unsigned int, pages)
+    __field(unsigned long, offset)
+    __field(unsigned int, hits)
+    __field(unsigned int, max_pages)
+),
+TP_fast_assign(
+    __entry->pages = pages;
+    __entry->offset = offset;
+    __entry->hits = hits;
+    __entry->max_pages = max_pages;
+),
+TP_printk("pages=%d offset=%lx hits=%d max_pages=%d.",
+          __entry->pages, __entry->offset, __entry->hits, __entry->max_pages)
+);
+TRACE_EVENT(swap_cluster_readahead,
+TP_PROTO(struct swap_info_struct *si, unsigned long type, unsigned long offset),
+TP_ARGS(si, type, offset),
+TP_STRUCT__entry(
+    __field(struct swap_info_struct*, si)
+    __field(unsigned long, type)
+    __field(unsigned long, offset)
+),
+TP_fast_assign(
+    __entry->si = si;
+    __entry->type = type;
+    __entry->offset = offset;
+),
+TP_printk("si=%p type=%lx offset=%lx.",
+          __entry->si, __entry->type, __entry->offset)
+);
+TRACE_EVENT(swap_vma_readahead,
+TP_PROTO(unsigned long type, unsigned long offset, struct vm_fault *vmf),
+TP_ARGS(type, offset, vmf),
+TP_STRUCT__entry(
+    __field(unsigned long, type)
+    __field(unsigned long, offset)
+    __field(struct vm_fault *, vmf)
+),
+TP_fast_assign(
+    __entry->type = type;
+    __entry->offset = offset;
+    __entry->vmf = vmf;
+),
+TP_printk("type=%lx offset=%lx addr=%lx.",
+          __entry->type, __entry->offset, __entry->vmf->address)
+);
+TRACE_EVENT(swap_vma_ra_win,
+TP_PROTO(struct vm_fault *vmf, unsigned long start, unsigned long end, unsigned long faddr, unsigned long prev_faddr, unsigned int hits, unsigned int win),
+TP_ARGS(vmf, start, end, faddr, prev_faddr, hits, win),
+TP_STRUCT__entry(
+    __field(struct vm_fault *, vmf)
+    __field(unsigned long, start)
+    __field(unsigned long, end)
+    __field(unsigned long, faddr)
+    __field(unsigned long, prev_faddr)
+    __field(unsigned int, hits)
+    __field(unsigned int, win)
+),
+TP_fast_assign(
+    __entry->vmf = vmf;
+    __entry->start = start;
+    __entry->end = end;
+    __entry->faddr = faddr;
+    __entry->prev_faddr = prev_faddr;
+    __entry->hits = hits;
+    __entry->win = win;
+),
+TP_printk("vmf=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
+          __entry->vmf, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
+);
+
 #endif /* _TRACE_SWAP_H */
 
 /* This part must be outside protection */

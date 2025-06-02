@@ -1330,6 +1330,7 @@ static bool get_swap_device_info(struct swap_info_struct *si)
 	smp_rmb();
 	return true;
 }
+#ifdef CONFIG_SWAP_VMA
 struct vma_rmap_data {
 		struct swap_info_struct *si;
 		pgoff_t index;
@@ -1432,6 +1433,7 @@ static struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,stru
 	}
 	return data.si;
 }
+#endif
 
 #ifdef CONFIG_SWAP_VMA
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
@@ -1507,11 +1509,12 @@ start_over:
 			if (n_ret || size > 1)
 				goto check_out;
 		}
+		#ifdef CONFIG_SWAP_VMA
 		else
 		{
 			printk(KERN_INFO "%s:%s:%d [CPU:%d] failed getting swap info. BUG si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
 		}
-
+		#endif
 		spin_lock(&swap_avail_lock);
 		/*
 		 * if we got here, it's likely that si was almost full before,
@@ -1560,17 +1563,20 @@ static struct swap_info_struct *_swap_info_get(swp_entry_t entry)
 
 bad_free:
 	pr_err("%s: %s%08lx\n", __func__, Unused_offset, entry.val);
+	pr_err("%s: entry:%s%08lx type:%ld offset:%ld\n", __func__, Unused_offset, entry.val, swp_type(entry), swp_offset(entry));
 	goto out;
 bad_offset:
 	pr_err("%s: %s%08lx\n", __func__, Bad_offset, entry.val);
+	pr_err("%s: entry:%s%08lx type:%ld offset:%ld\n", __func__, Bad_offset, entry.val, swp_type(entry), swp_offset(entry));
 	goto out;
 bad_device:
 	pr_err("%s: %s%08lx\n", __func__, Unused_file, entry.val);
+	pr_err("%s: entry:%s%08lx type:%ld offset:%ld\n", __func__, Unused_file, entry.val, swp_type(entry), swp_offset(entry));
 	goto out;
 bad_nofile:
 	pr_err("%s: %s%08lx\n", __func__, Bad_file, entry.val);
+	pr_err("%s: entry:%s%08lx type:%ld offset:%ld\n", __func__, Bad_file, entry.val, swp_type(entry), swp_offset(entry));
 out:
-	pr_err("%s: entry:%s%08lx type:%ld offset:%ld\n", __func__, Bad_offset, entry.val, swp_type(entry), swp_offset(entry));
     dump_stack();
 	return NULL;
 }
@@ -3931,7 +3937,6 @@ static int __swap_duplicate(swp_entry_t entry, unsigned char usage, int nr)
 	VM_WARN_ON(nr > SWAPFILE_CLUSTER - offset % SWAPFILE_CLUSTER);
 	VM_WARN_ON(usage == 1 && nr > 1);
 	#ifndef CONFIG_SWAP_VMA
-	struct swap_cluster_info *ci;
 	ci = lock_cluster(si, offset);
 	#else
 	spin_lock(&si->lock);

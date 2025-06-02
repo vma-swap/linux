@@ -5308,10 +5308,12 @@ static void lru_gen_seq_show_full(struct seq_file *m, struct lruvec *lruvec,
 			unsigned long n[3] = {};
 
 			if (seq == max_seq) {
+				// if youngest
 				s = "RTx";
 				n[0] = READ_ONCE(lrugen->avg_refaulted[type][tier]);
 				n[1] = READ_ONCE(lrugen->avg_total[type][tier]);
 			} else if (seq == min_seq[type] || NR_HIST_GENS > 1) {
+				// all else
 				s = "rep";
 				n[0] = atomic_long_read(&lrugen->refaulted[hist][type][tier]);
 				n[1] = atomic_long_read(&lrugen->evicted[hist][type][tier]);
@@ -5386,7 +5388,7 @@ static int lru_gen_seq_show(struct seq_file *m, void *v)
 		for (type = 0; type < ANON_AND_FILE; type++) {
 			unsigned long size = 0;
 			char mark = full && seq < min_seq[type] ? 'x' : ' ';
-
+			// x marks generations that we already evicted we can have between 4 and 2 gnerations? but at most 1 diff between file and anon
 			for (zone = 0; zone < MAX_NR_ZONES; zone++)
 				size += max(READ_ONCE(lrugen->nr_pages[gen][type][zone]), 0L);
 
