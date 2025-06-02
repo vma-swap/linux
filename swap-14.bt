@@ -82,6 +82,3 @@ kprobe:hpage_collapse_scan_file {
 kprobe:lru_add_drain_all {
     printf("lru_add_drain_all: %llu\n", nsecs(monotonic));
 }
-kprobe:hugepage_vma_revalidate {
-    printf("hugepage_vma_revalidate: %llu\n", nsecs(monotonic));
-}
