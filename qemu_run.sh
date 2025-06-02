@@ -15,11 +15,11 @@ done
 
 # Build the QEMU command
 QEMU_CMD="qemu-system-x86_64 \
-        -m 5G \
-        -smp 2 \
+        -m 500M \
+        -smp 16 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr\" \
-        -drive file=image/bullseye.img,format=raw \
+        -drive file=/scratch/bullseye.img,format=raw \
         -drive file=/scratch/vm_swap.img,format=raw,if=virtio \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:10021-:22 \
         -device virtio-net-pci,netdev=net0 \
@@ -34,3 +34,22 @@ fi
 
 # Run the QEMU command and log output
 eval $QEMU_CMD 2>&1 | tee vm.log
+# for i in {1..100}; do dd if=/dev/zero of=/scratch/vma_swaps/swapfile_$i.swap bs=1G count=1 status=progress; done     
+# ./minimal_bench/a.out -s 50 -b 536870912 100 -i 100 -r 1 -w 1 
+# for i in {1..200}; do
+#   sudo swapon /scratch/vma_swaps/swapfile_$i.swap
+# done
+
+# for i in {72..200}; do
+#   echo "/scratch/vma_swaps/swapfile_$i.swap none swap sw 0 0" >> /etc/fstab
+# done
+# for i in {1..100}; do
+#   rm /scratch/vma_swaps/swapfile_$i.swap
+# done
+  #  echo "/scratch/vma_swaps/swapfile_$i.swap none swap sw 0 0" >> /etc/fstab
+# for f in /scratch/vma_swaps/swapfile_*.swap; do
+# done
+# for i in {1..200}; do
+#   sudo echo "/scratch/vma_swaps/swapfile_$i.swap none swap sw 0 0" >> /etc/fstab
+# done
+# ./minimal_bench/a.out -s 300 -b 536870912 -i 1 -r 1 -w 1 
