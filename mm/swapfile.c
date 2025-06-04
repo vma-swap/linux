@@ -118,6 +118,8 @@ static struct plist_head *swap_avail_heads;
 static DEFINE_SPINLOCK(swap_avail_lock);
 
 static struct swap_info_struct *swap_info[MAX_SWAPFILES];
+EXPORT_SYMBOL(swap_avail_heads);
+EXPORT_SYMBOL(swap_avail_lock);
 
 static DEFINE_MUTEX(swapon_mutex);
 
