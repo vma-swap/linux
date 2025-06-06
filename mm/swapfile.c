@@ -118,8 +118,6 @@ static struct plist_head *swap_avail_heads;
 static DEFINE_SPINLOCK(swap_avail_lock);
 
 static struct swap_info_struct *swap_info[MAX_SWAPFILES];
-EXPORT_SYMBOL(swap_avail_heads);
-EXPORT_SYMBOL(swap_avail_lock);
 
 static DEFINE_MUTEX(swapon_mutex);
 
@@ -1106,15 +1104,6 @@ static void del_from_avail_list(struct swap_info_struct *si, bool swapoff)
 skip:
 	spin_unlock(&swap_avail_lock);
 }
-// same as del_from_avail_list but already holding swap_avail_lock
-static void del_from_avail_list_locked(struct swap_info_struct *si, bool swapoff)
-{
-	int nid;
-	printk(KERN_INFO "%s:%s:%d [CPU:%d] deleting si from avail list. si=%p swapoff=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,swapoff);
-	for_each_node(nid)
-		plist_del(&si->avail_lists[nid], &swap_avail_heads[nid]);
-
-}
 
 /* SWAP_USAGE_OFFLIST_BIT can only be cleared by this helper. */
 static void add_to_avail_list(struct swap_info_struct *si, bool swapon)
@@ -1485,9 +1474,11 @@ start_over:
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		#ifdef CONFIG_SWAP_VMA
+		if (si->nr_vmas > 0)
+			continue;
 		struct swap_info_struct *actual_si = set_swap_info_for_folio(folio, si, &folio_index);
-		if(si==actual_si)
-			del_from_avail_list_locked(si, false);
+		if(si == actual_si)
+			si->nr_vmas++;
 		else{
 			if(!actual_si)
 			{
@@ -1543,7 +1534,26 @@ noswap:
 	trace_get_swap_pages(n_ret, si, swp_offset(swp_entries[0]),swp_type(swp_entries[0]));
 	return n_ret;
 }
-
+#ifdef CONFIG_SWAP_VMA
+int get_avail_swap_info_count(void){
+	int count = 0;
+	struct swap_info_struct *si, *next;
+	int node = numa_node_id();
+	spin_lock(&swap_avail_lock);
+	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
+		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
+		if (si->nr_vmas > 0)
+			continue;
+		if (get_swap_device_info(si)) {
+			put_swap_device(si);
+			count++;
+		}
+	}
+	spin_unlock(&swap_avail_lock);
+	return count;
+}
+EXPORT_SYMBOL_GPL(get_avail_swap_info_count);
+#endif
 static struct swap_info_struct *_swap_info_get(swp_entry_t entry)
 {
 	struct swap_info_struct *si;
@@ -3365,7 +3375,9 @@ static struct swap_info_struct *alloc_swap_info(void)
 	spin_lock_init(&p->cont_lock);
 	atomic_long_set(&p->inuse_pages, SWAP_USAGE_OFFLIST_BIT);
 	init_completion(&p->comp);
-
+	#ifdef CONFIG_SWAP_VMA
+	p->nr_vmas = 0;
+	#endif
 	return p;
 }
 

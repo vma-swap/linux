@@ -10,7 +10,7 @@
 #include <linux/stacktrace.h>
 #include <linux/swapops.h>
 #include <linux/mm.h>
-
+#include "../../../mm/vma.h"
 TRACE_EVENT(swap_entry_alloc_from_cache,
     TP_PROTO(swp_entry_t swp_entry, swp_entry_t	*slots, 
              int cur, int nr),
@@ -519,6 +519,21 @@ TP_fast_assign(
 ),
 TP_printk("vmf=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
           __entry->vmf, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
+);
+TRACE_EVENT(commit_merge,
+TP_PROTO(struct vma_merge_struct *vmg),
+TP_ARGS(vmg),
+TP_STRUCT__entry(
+    __field(struct vma_merge_struct *, vmg)
+),
+TP_fast_assign(
+    __entry->vmg = vmg;
+),
+TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx.",
+            __entry->vmg, __entry->vmg->vma, __entry->vmg->vma->si,
+            __entry->vmg->prev, __entry->vmg->prev ? __entry->vmg->prev->si : NULL,
+            __entry->vmg->next, __entry->vmg->next ? __entry->vmg->next->si : NULL,
+            __entry->vmg->start, __entry->vmg->end)
 );
 
 #endif /* _TRACE_SWAP_H */
