@@ -6,6 +6,8 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <trace/events/swap.h>
+
 
 struct mmap_state {
 	struct mm_struct *mm;
@@ -670,7 +672,12 @@ static int commit_merge(struct vma_merge_struct *vmg,
 			vma_iter_store(vmg->vmi, adjust);
 		}
 	}
-
+	#ifdef CONFIG_SWAP_VMA
+	spin_lock(&vmg->vma->swap_lock);
+	vmg->vma->si = NULL;
+	trace_commit_merge(vmg);
+	spin_unlock(&vmg->vma->swap_lock);
+	#endif
 	vma_complete(&vp, vmg->vmi, vmg->vma->vm_mm);
 
 	return 0;
