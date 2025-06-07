@@ -521,21 +521,36 @@ TP_printk("vmf=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
           __entry->vmf, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
 );
 TRACE_EVENT(commit_merge,
-TP_PROTO(struct vma_merge_struct *vmg),
-TP_ARGS(vmg),
-TP_STRUCT__entry(
-    __field(struct vma_merge_struct *, vmg)
-),
-TP_fast_assign(
-    __entry->vmg = vmg;
-),
-TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx.",
-            __entry->vmg, __entry->vmg->vma, __entry->vmg->vma->si,
-            __entry->vmg->prev, __entry->vmg->prev ? __entry->vmg->prev->si : NULL,
-            __entry->vmg->next, __entry->vmg->next ? __entry->vmg->next->si : NULL,
-            __entry->vmg->start, __entry->vmg->end)
+    TP_PROTO(struct vma_merge_struct *vmg),
+    TP_ARGS(vmg),
+    TP_STRUCT__entry(
+        __field(unsigned long, vmg_ptr)
+        __field(unsigned long, vma_ptr)
+        __field(unsigned long, vma_si_ptr)
+        __field(unsigned long, prev_ptr)
+        __field(unsigned long, prev_si_ptr)
+        __field(unsigned long, next_ptr)
+        __field(unsigned long, next_si_ptr)
+        __field(unsigned long, start)
+        __field(unsigned long, end)
+    ),
+    TP_fast_assign(
+        __entry->vmg_ptr = (unsigned long)vmg;
+        __entry->vma_ptr = (unsigned long)(vmg ? vmg->vma : NULL);
+        __entry->vma_si_ptr = (unsigned long)(vmg && vmg->vma ? vmg->vma->si : NULL);
+        __entry->prev_ptr = (unsigned long)(vmg ? vmg->prev : NULL);
+        __entry->prev_si_ptr = (unsigned long)(vmg && vmg->prev ? vmg->prev->si : NULL);
+        __entry->next_ptr = (unsigned long)(vmg ? vmg->next : NULL);
+        __entry->next_si_ptr = (unsigned long)(vmg && vmg->next ? vmg->next->si : NULL);
+        __entry->start = vmg ? vmg->start : 0;
+        __entry->end = vmg ? vmg->end : 0;
+    ),
+    TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx",
+        (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr, (void *)__entry->vma_si_ptr,
+        (void *)__entry->prev_ptr, (void *)__entry->prev_si_ptr,
+        (void *)__entry->next_ptr, (void *)__entry->next_si_ptr,
+        __entry->start, __entry->end)
 );
-
 #endif /* _TRACE_SWAP_H */
 
 /* This part must be outside protection */
