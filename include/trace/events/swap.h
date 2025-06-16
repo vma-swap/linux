@@ -537,19 +537,28 @@ TRACE_EVENT(commit_merge,
     TP_fast_assign(
         __entry->vmg_ptr = (unsigned long)vmg;
         __entry->vma_ptr = (unsigned long)(vmg ? vmg->vma : NULL);
+        #ifdef CONIG_SWAP_VMA
         __entry->vma_si_ptr = (unsigned long)(vmg && vmg->vma ? vmg->vma->si : NULL);
-        __entry->prev_ptr = (unsigned long)(vmg ? vmg->prev : NULL);
         __entry->prev_si_ptr = (unsigned long)(vmg && vmg->prev ? vmg->prev->si : NULL);
-        __entry->next_ptr = (unsigned long)(vmg ? vmg->next : NULL);
         __entry->next_si_ptr = (unsigned long)(vmg && vmg->next ? vmg->next->si : NULL);
+        #endif
+        __entry->prev_ptr = (unsigned long)(vmg ? vmg->prev : NULL);
+        __entry->next_ptr = (unsigned long)(vmg ? vmg->next : NULL);
         __entry->start = vmg ? vmg->start : 0;
         __entry->end = vmg ? vmg->end : 0;
     ),
+    #ifdef CONFIG_SWAP_VMA
     TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx",
         (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr, (void *)__entry->vma_si_ptr,
         (void *)__entry->prev_ptr, (void *)__entry->prev_si_ptr,
         (void *)__entry->next_ptr, (void *)__entry->next_si_ptr,
         __entry->start, __entry->end)
+    #else
+    TP_printk("vmg=%p vma=%p prev=%p next=%p start=%lx end=%lx",
+        (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr,
+        (void *)__entry->prev_ptr, (void *)__entry->next_ptr,
+        __entry->start, __entry->end)
+    #endif /* CONFIG_SWAP_VMA */
 );
 #endif /* _TRACE_SWAP_H */
 

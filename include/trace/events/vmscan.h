@@ -535,6 +535,63 @@ TRACE_EVENT(mm_vmscan_throttled,
 		__entry->usec_delayed,
 		show_throttle_flags(__entry->reason))
 );
+TP_EVENT(mm_vmscan_isolate_folio,
+
+	TP_PROTO(struct folio *folio),
+	TP_ARGS(folio),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio);
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+	),
+	TP_printk("folio=%p.", __entry->folio);
+);
+#ifdef CONFIG_VMA_RECLAIM
+TP_EVENT(mm_vmscan_folios,
+
+	TP_PROTO(struct folio *folio, unsigned int vma_reclimation, int zone, int type, int gen),
+	TP_ARGS(folio, vma_reclimation, zone, type, gen),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio);
+		    __field(unsigned int, vma_reclimation);
+		    __field(int, zone);
+		    __field(int, type);
+		    __field(int, gen);
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->vma_reclimation = vma_reclimation;
+		__entry->zone = zone;
+		__entry->type = type;
+		__entry->gen = gen;
+	),
+	TP_printk("folio=%p vma_reclimation=%u zone=%d type=%d gen=%d",
+		__entry->folio,
+		__entry->vma_reclimation,
+		__entry->zone,
+		__entry->type,
+		__entry->gen)
+);
+TP_EVENT(mm_vmscan_get_next_folio,
+	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
+	TP_ARGS(folio, addr, vma),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio);
+		    __field(unsigned long, addr);
+		    __field(struct vm_area_struct *, vma);
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->addr = addr;
+		__entry->vma = vma;
+	),
+	TP_printk("folio=%p addr=0x%lx vma=%p",
+		__entry->folio,
+		__entry->addr,
+		__entry->vma)
+);
+#endif
 #endif /* _TRACE_VMSCAN_H */
 
 /* This part must be outside protection */
