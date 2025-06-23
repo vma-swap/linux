@@ -2653,6 +2653,47 @@ static void rmap_walk_anon(struct folio *folio,
 		anon_vma_unlock_read(anon_vma);
 }
 
+// same as rmap_walk_anon, but doesn't yield the CPU for noninterruptible contexts
+void rmap_walk_anon_no_yield(struct folio *folio,
+		struct rmap_walk_control *rwc, bool locked)
+{
+	struct anon_vma *anon_vma;
+	pgoff_t pgoff_start, pgoff_end;
+	struct anon_vma_chain *avc;
+
+	if (locked) {
+		anon_vma = folio_anon_vma(folio);
+		/* anon_vma disappear under us? */
+		VM_BUG_ON_FOLIO(!anon_vma, folio);
+	} else {
+		anon_vma = rmap_walk_anon_lock(folio, rwc);
+	}
+	if (!anon_vma)
+		return;
+
+	pgoff_start = folio_pgoff(folio);
+	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
+			pgoff_start, pgoff_end) {
+		struct vm_area_struct *vma = avc->vma;
+		unsigned long address = vma_address(vma, pgoff_start,
+				folio_nr_pages(folio));
+
+		VM_BUG_ON_VMA(address == -EFAULT, vma);
+		// cond_resched(); where the yield would normally be
+
+		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
+			continue;
+
+		if (!rwc->rmap_one(folio, vma, address, rwc->arg))
+			break;
+		if (rwc->done && rwc->done(folio))
+			break;
+	}
+
+	if (!locked)
+		anon_vma_unlock_read(anon_vma);
+}
 /*
  * rmap_walk_file - do something to file page using the object-based rmap method
  * @folio: the folio to be handled

@@ -535,51 +535,57 @@ TRACE_EVENT(mm_vmscan_throttled,
 		__entry->usec_delayed,
 		show_throttle_flags(__entry->reason))
 );
-TP_EVENT(mm_vmscan_isolate_folio,
+TRACE_EVENT(mm_vmscan_isolate_folio,
 
 	TP_PROTO(struct folio *folio),
 	TP_ARGS(folio),
 	TP_STRUCT__entry(
-		    __field(struct folio *, folio);
+		    __field(struct folio *, folio)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
 	),
-	TP_printk("folio=%p.", __entry->folio);
+	TP_printk("folio=%p", __entry->folio)
 );
 #ifdef CONFIG_VMA_RECLAIM
-TP_EVENT(mm_vmscan_folios,
+TRACE_EVENT(mm_vmscan_scan_folios,
 
-	TP_PROTO(struct folio *folio, unsigned int vma_reclimation, int zone, int type, int gen),
-	TP_ARGS(folio, vma_reclimation, zone, type, gen),
+	TP_PROTO(struct folio *folio, struct folio *prev_folio, int is_seq, unsigned int vma_reclimation, int zone, int type, int gen),
+	TP_ARGS(folio, prev_folio, is_seq, vma_reclimation, zone, type, gen),
 	TP_STRUCT__entry(
-		    __field(struct folio *, folio);
-		    __field(unsigned int, vma_reclimation);
-		    __field(int, zone);
-		    __field(int, type);
-		    __field(int, gen);
+		    __field(struct folio *, folio)
+			__field(struct folio *, prev_folio)
+			__field(int, is_seq)
+		    __field(unsigned int, vma_reclimation)
+		    __field(int, zone)
+		    __field(int, type)
+		    __field(int, gen)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
+		__entry->prev_folio = prev_folio;
+		__entry->is_seq = is_seq;
 		__entry->vma_reclimation = vma_reclimation;
 		__entry->zone = zone;
 		__entry->type = type;
 		__entry->gen = gen;
 	),
-	TP_printk("folio=%p vma_reclimation=%u zone=%d type=%d gen=%d",
+	TP_printk("folio=%p prev_folio=%p is_seq=%d vma_reclimation=%u zone=%d type=%d gen=%d",
 		__entry->folio,
+		__entry->prev_folio,
+		__entry->is_seq,
 		__entry->vma_reclimation,
 		__entry->zone,
 		__entry->type,
 		__entry->gen)
 );
-TP_EVENT(mm_vmscan_get_next_folio,
+TRACE_EVENT(mm_vmscan_get_next_folio,
 	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
 	TP_ARGS(folio, addr, vma),
 	TP_STRUCT__entry(
-		    __field(struct folio *, folio);
-		    __field(unsigned long, addr);
-		    __field(struct vm_area_struct *, vma);
+		    __field(struct folio *, folio)
+		    __field(unsigned long, addr)
+		    __field(struct vm_area_struct *, vma)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
@@ -588,6 +594,64 @@ TP_EVENT(mm_vmscan_get_next_folio,
 	),
 	TP_printk("folio=%p addr=0x%lx vma=%p",
 		__entry->folio,
+		__entry->addr,
+		__entry->vma)
+);
+TRACE_EVENT(mm_vmscan_follow_address,
+	TP_PROTO(struct vm_area_struct *vma, unsigned long addr, unsigned long pgd_val, 
+			unsigned long p4d_val, unsigned long pud_val, unsigned long pmd_val, unsigned long pte_val, unsigned long pfn, struct folio *folio),
+	TP_ARGS(vma, addr, pgd_val, p4d_val, pud_val, pmd_val, pte_val, pfn, folio),
+	TP_STRUCT__entry(
+		    __field(struct vm_area_struct *, vma)
+		    __field(unsigned long, addr)
+		    __field(unsigned long, pgd_val)
+		    __field(unsigned long, p4d_val)
+		    __field(unsigned long, pud_val)
+		    __field(unsigned long, pmd_val)
+		    __field(unsigned long, pte_val)
+		    __field(unsigned long, pfn)
+		    __field(struct folio *, folio)
+	),	
+	TP_fast_assign(
+		__entry->vma = vma;
+		__entry->addr = addr;
+		__entry->pgd_val = pgd_val;
+		__entry->p4d_val = p4d_val;
+		__entry->pud_val = pud_val;
+		__entry->pmd_val = pmd_val;
+		__entry->pte_val = pte_val;
+		__entry->pfn = pfn;
+		__entry->folio = folio;
+	),
+	TP_printk("vma=%p addr=0x%lx pgd_val=0x%lx p4d_val=0x%lx pud_val=0x%lx pmd_val=0x%lx pte_val=0x%lx pfn=0x%lx folio=%p",
+		__entry->vma,
+		__entry->addr,
+		__entry->pgd_val,
+		__entry->p4d_val,
+		__entry->pud_val,
+		__entry->pmd_val,
+		__entry->pte_val,
+		__entry->pfn,
+		__entry->folio)
+);
+TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
+	TP_PROTO(struct folio *cur_folio, struct folio *next_folio, unsigned long addr, struct vm_area_struct *vma),
+	TP_ARGS(cur_folio, next_folio, addr, vma),
+	TP_STRUCT__entry(
+		    __field(struct folio *, cur_folio)
+		    __field(struct folio *, next_folio)
+		    __field(unsigned long, addr)
+		    __field(struct vm_area_struct *, vma)
+	),
+	TP_fast_assign(
+		__entry->cur_folio = cur_folio;
+		__entry->next_folio = next_folio;
+		__entry->addr = addr;
+		__entry->vma = vma;
+	),
+	TP_printk("cur_folio=%p next_folio=%p next_addr=0x%lx vma=%p",
+		__entry->cur_folio,
+		__entry->next_folio,
 		__entry->addr,
 		__entry->vma)
 );

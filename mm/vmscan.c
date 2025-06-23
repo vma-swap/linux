@@ -3725,6 +3725,43 @@ static void clear_mm_walk(void)
 	if (!current_is_kswapd())
 		kfree(walk);
 }
+#ifdef CONFIG_VMA_RECLAIM
+static struct folio* follow_address(struct vm_area_struct *vma, unsigned long address, struct mem_cgroup *memcg, struct pglist_data *pgdat){
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *ptep;
+	struct folio* folio = NULL;
+	unsigned long pfn = 0;
+	pgd = pgd_offset(vma->vm_mm, address);
+	if (pgd_none(*pgd) || pgd_bad(*pgd))
+		goto out;
+	p4d = p4d_offset(pgd, address);
+	if (p4d_none(*p4d) || p4d_bad(*p4d))
+		goto out;
+	pud = pud_offset(p4d, address);
+	if (pud_none(*pud) || pud_bad(*pud))
+		goto out;
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd) || pmd_bad(*pmd))
+		goto out;
+	ptep = pte_offset_map(pmd, address);
+	if (!ptep)
+		goto out;
+	if (pte_none(*ptep) || !pte_present(*ptep)) 
+		goto unmap;
+	pfn = get_pte_pfn(*ptep, vma, address, pgdat);
+	if (pfn == -1)
+		goto unmap;
+	folio = get_pfn_folio(pfn, memcg, pgdat, true);
+	
+	unmap:
+		pte_unmap(ptep);
+	out:
+		trace_mm_vmscan_follow_address(vma, address, pgd_val(*pgd), p4d_val(*p4d), pud_val(*pud), pmd_val(*pmd), pte_val(*ptep), pfn, folio);
+		return folio;
+}
 struct vma_reclaim_rmap_data {
 	unsigned long addr;
 	struct vm_area_struct *vma;
@@ -3733,42 +3770,12 @@ struct vma_reclaim_rmap_data {
 struct vma_reclaim_rmap_data_next_foilio {
 	unsigned long cur_addr;
 	struct vm_area_struct *vma;
-	sturct folio *next_folio;
+	struct folio *next_folio;
 	unsigned long next_addr;
 };
 
-static bool get_vm_info(struct folio *folio, struct vm_area_struct *vma,
+static bool get_next_folio(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
-{
-	if(vma){
-		arg->vma = vma;
-		arg->addr = address;
-		return false; // stop walking
-	}
-	return true; // continue walking
-}
-
-struct vm_area_struct* get_vm_info_from_folio(struct folio* folio, unsigned long* addr){
-	struct vma_reclaim_rmap_data data = {
-		.addr = 0,
-		.vma = NULL,
-	};
-	// walk the reverse mapping and return the next folio in the vma 
-	struct rmap_walk_control rwc = {
-		.rmap_one = get_vm_info,
-		.arg = &data,
-		.done = NULL,
-		.anon_lock = folio_lock_anon_vma_read,
-	};
-	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_locked(folio, &rwc);
-	else
-		rmap_walk(folio, &rwc);
-	*addr = data.addr;
-	return data.vma;
-}
-static bool get_next_folio(struct folio *folio, unsigned long address,
-			 struct vm_area_struct *vma, void *arg)
 {
 	struct vma_reclaim_rmap_data_next_foilio *data = arg;
 
@@ -3776,30 +3783,14 @@ static bool get_next_folio(struct folio *folio, unsigned long address,
 		return true; // continue walking
 	unsigned long step = PAGE_SIZE << folio_order(folio);
 	unsigned long next_addr = address + step;
-	struct follow_page_context *ctx = { NULL };
-	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
-	if(!page_vma_mapped_walk(&pvmw))
-		return true; // continue walking
-
-	pte_t *pte = pvmw->pte;
-	unsigned long pfn;
-	struct pglist_data *pgdat = folio_pgdat(folio);
-	
-	pte_t ptent = ptep_get(pte + 1);
-	
-	
-	pfn = get_pte_pfn(ptent, vma, next_addr, pgdat);
-	if (pfn == -1)
-	return true; // continue walking
-
-	struct mem_cgroup *memcg = folio_memcg(folio);
-	folio = get_pfn_folio(pfn, memcg, pgdat, True);
-	if (!folio)
-		return true; // continue walking
-	trace_mm_vmscan_get_next_folio(folio, next_addr, vma);
+	struct folio *next_folio = follow_address(vma, next_addr, folio_memcg(folio), folio_pgdat(folio));
+	trace_mm_vmscan_get_next_folio(next_folio, next_addr, vma);
+	data->next_folio = next_folio;
+	data->next_addr = next_addr;
+	data->vma = vma;
 	return false;
 }
-struct folio* get_next_folio_from_folio(struct folio* cur_folio){
+static struct folio* get_next_folio_for_folio(struct folio* cur_folio){
 	struct vma_reclaim_rmap_data_next_foilio data = {
 		.next_folio = NULL,
 	};
@@ -3809,15 +3800,12 @@ struct folio* get_next_folio_from_folio(struct folio* cur_folio){
 		.done = NULL,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
-
-	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_locked(cur_folio, &rwc);
-	else
-		rmap_walk(cur_folio, &rwc);
-
+	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(cur_folio), cur_folio);
+	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+	trace_mm_vmscan_get_next_folio_for_folio(cur_folio, data.next_folio, data.next_addr, data.vma);
 	return data.next_folio;
-
 }
+#endif
 
 static bool inc_min_seq(struct lruvec *lruvec, int type, bool can_swap)
 {
@@ -4521,16 +4509,15 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 
 		// this is not NULL only if prev folio was isolated
 		struct folio *prev_folio = NULL; 
-		unsigned long addr = 0;
-		struct vm_area_struct *vma = NULL;
-		sc-> vma_reclamation = true;
+		sc->vma_reclamation = true;
 		#endif
 
 		while (!list_empty(head)) {
 			struct folio *folio;
 			#ifdef CONFIG_VMA_RECLAIM
-			if (sc->vma_reclamation && prev_folio && !folio_is_file_lru(prev_folio))
-				folio = get_next_folio_from_folio(prev_folio, &addr);
+			int is_sequential = 0;
+			if (sc->vma_reclamation && prev_folio && !folio_is_file_lru(prev_folio)){
+				folio = get_next_folio_for_folio(prev_folio);
 				/** if the next folio is file mapped, a different zone, not on the LRU or is in a different gen than the one we are scanning 
 				then this means that our sequential swap out has failed and we fall back to the regular LRU scan.
 				 **/ 
@@ -4538,13 +4525,20 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 					folio_is_file_lru(folio) ||
 					folio_zonenum(folio) != zone ||
 					!folio_test_lru(folio) ||
-				 	!folio_lru_gen(folio) == gen){
+				 	!(folio_lru_gen(folio) == gen)){
 					sc->vma_reclamation = false;
 					folio = lru_to_folio(head);
+					is_sequential = 0;
 				}
-				prev_folio = NULL;
+				else
+					is_sequential = 1;
 			}
-			trace_mm_vmscan_folios(folio, sc->vma_reclamation, zone, type, gen);
+			else{
+				is_sequential = 0;
+				folio = lru_to_folio(head);
+			}
+			trace_mm_vmscan_scan_folios(folio, prev_folio, is_sequential, sc->vma_reclamation, zone, type, gen);
+			prev_folio = NULL;
 			#else 
 			folio = lru_to_folio(head);
 			#endif

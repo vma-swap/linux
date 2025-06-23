@@ -537,7 +537,7 @@ TRACE_EVENT(commit_merge,
     TP_fast_assign(
         __entry->vmg_ptr = (unsigned long)vmg;
         __entry->vma_ptr = (unsigned long)(vmg ? vmg->vma : NULL);
-        #ifdef CONIG_SWAP_VMA
+        #ifdef CONFIG_SWAP_VMA
         __entry->vma_si_ptr = (unsigned long)(vmg && vmg->vma ? vmg->vma->si : NULL);
         __entry->prev_si_ptr = (unsigned long)(vmg && vmg->prev ? vmg->prev->si : NULL);
         __entry->next_si_ptr = (unsigned long)(vmg && vmg->next ? vmg->next->si : NULL);
