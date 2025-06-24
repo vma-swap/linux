@@ -65,6 +65,16 @@ kprobe:swap_cluster_readahead {
     $vir_addr = (uint64)$vmf->real_address;
     printf("swap_cluster_readahead: %llu 0x%lx 0x%lx 0x%lx 0x%lx\n", nsecs(monotonic), $vir_addr, $val, $offset, $type);
 }
+kprobe:swap_vma_readahead {
+    $val = (uint64)arg0;
+    $offset = $val & ((1<<58)-1);
+    $type = ($val >> 58);
+    $vmf = (struct vm_fault *)arg2;
+    $vma = (struct vm_area_struct *)$vmf->vma;
+    $vir_addr = (uint64)$vmf->real_address;
+    printf("swap_vma_readahead: %llu 0x%lx 0x%lx 0x%lx 0x%lx\n", nsecs(monotonic), $vir_addr, $val, $offset, $type);
+}
+
 kprobe:madvise_collapse {
     $vma = (struct vm_area_struct *)arg0;
     $start = (uint64)arg2;

@@ -24,7 +24,7 @@ if [ "$1" == "release" ]; then
     exit 0
 fi
 echo -e "\033[0;32mBuilding dev kernel...\033[0m"
-make -j$(nproc) M=mm
+make -j$(nproc)
 #check return code and exit prematurely if it fails
 if [ $? -ne 0 ]; then
     echo "Build failed"
