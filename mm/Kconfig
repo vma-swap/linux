@@ -23,19 +23,23 @@ menuconfig SWAP
 	  in your computer.  If unsure say Y.
 	  
 config SWAP_VMA
-	bool "Enable buddy allocator for swap space management for VMA aware swap"
+	bool "enable swapfile arrangement by vmas"
 	depends on SWAP
 	default n
 	help
-	  This option enables a buddy allocator system for swap space management,
-	  which provides better sequential allocation and support for variable-sized
-	  swap regions that can be dynamically enlarged.
-	  
-	  The buddy allocator improves swap space utilization by reducing fragmentation
-	  and allows for more efficient handling of swap operations. It is especially
-	  beneficial for systems with high memory pressure and significant swap usage.
+	  This option enables the swapfile arrangement by vmas, which creates a swapfile for each vma
+	  and arrangest the swapout to the folio offest in the vma.
 	  
 	  If unsure, say N.
+
+config VMA_RECLAIM
+	bool "enable vma reclaim"
+	depends on SWAP_VMA
+	default n
+	help
+	  This option enables the vma reclaim, which reclaims folios in their vma order.
+	  If unsure, say N. 
+
 
 config ZSWAP
 	bool "Compressed cache for swap pages"
