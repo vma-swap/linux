@@ -9,5 +9,7 @@ unsigned long arch_max_swapfile_size(void);
 extern unsigned long swapfile_maximum_size;
 /* Whether swap migration entry supports storing A/D bits for the arch */
 extern bool swap_migration_ad_supported;
-
+#ifdef CONFIG_SWAP_VMA
+extern unsigned int swap_ra_granularity;
+#endif
 #endif /* _LINUX_SWAPFILE_H */

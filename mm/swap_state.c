@@ -758,7 +758,7 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	unsigned long faddr, prev_faddr, left, right;
 	unsigned int max_win, hits, prev_win, win;
 	#ifdef CONFIG_SWAP_VMA
-	max_win = 1 << SWAP_RA_ORDER_CEILING;
+	max_win = READ_ONCE(swap_ra_granularity);
 	#else
 	max_win = 1 << min(READ_ONCE(page_cluster), SWAP_RA_ORDER_CEILING);
 	#endif
