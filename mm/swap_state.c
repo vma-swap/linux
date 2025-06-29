@@ -53,6 +53,7 @@ static bool enable_vma_readahead __read_mostly = true;
 #define SWAP_RA_HITS(v)		((v) & SWAP_RA_HITS_MASK)
 #define SWAP_RA_WIN(v)		(((v) & SWAP_RA_WIN_MASK) >> SWAP_RA_WIN_SHIFT)
 #define SWAP_RA_ADDR(v)		((v) & PAGE_MASK)
+#define SWAP_RA_WIN_MAX     (SWAP_RA_WIN_MASK >> SWAP_RA_WIN_SHIFT)
 
 #define SWAP_RA_VAL(addr, win, hits)				\
 	(((addr) & PAGE_MASK) |					\
@@ -607,9 +608,20 @@ static unsigned int __swapin_nr_pages(unsigned long prev_offset,
 		unsigned int roundup = 4;
 		while (roundup < pages)
 			roundup <<= 1;
+		#ifdef CONFIG_SWAP_VMA
+		/* in case we max hits and previous too.
+		boost pages to the maximum
+		*/
+		if (hits == SWAP_RA_HITS_MAX &&
+			prev_win == SWAP_RA_WIN_MAX)
+			pages = max_pages;
+		else
+			pages = roundup;
+		#else
 		pages = roundup;
-	}
+		#endif
 
+	}
 	if (pages > max_pages)
 		pages = max_pages;
 
@@ -773,7 +785,7 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	hits = SWAP_RA_HITS(ra_val);
 	win = __swapin_nr_pages(PFN_DOWN(prev_faddr), PFN_DOWN(faddr), hits,
 				max_win, prev_win);
-	atomic_long_set(&vma->swap_readahead_info, SWAP_RA_VAL(faddr, win, 0));
+	atomic_long_set(&vma->swap_readahead_info, SWAP_RA_VAL(faddr, min(win, SWAP_RA_WIN_MAX), 0));
 	if (win == 1)
 		return 1;
 

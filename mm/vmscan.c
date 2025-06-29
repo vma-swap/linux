@@ -204,6 +204,10 @@ struct scan_control {
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
 int vm_swappiness = 60;
+#ifdef CONFIG_VMA_RECLAIM
+unsigned int max_swap_around = 64;
+#endif
+
 
 #ifdef CONFIG_MEMCG
 
@@ -3307,7 +3311,28 @@ static bool get_next_vma(unsigned long mask, unsigned long size, struct mm_walk 
 
 	return false;
 }
+#ifdef CONFIG_VMA_RECLAIM
+static unsigned long get_pte_pfn_vma(pte_t pte, struct vm_area_struct *vma, unsigned long addr,
+				 struct pglist_data *pgdat)
+{
+	unsigned long pfn = pte_pfn(pte);
 
+	VM_WARN_ON_ONCE(addr < vma->vm_start || addr >= vma->vm_end);
+
+	if (!pte_present(pte) || is_zero_pfn(pfn))
+		return -1;
+
+	if (WARN_ON_ONCE(pte_devmap(pte) || pte_special(pte)))
+		return -1;
+
+	if (WARN_ON_ONCE(!pfn_valid(pfn)))
+		return -1;
+
+	if (pfn < pgdat->node_start_pfn || pfn >= pgdat_end_pfn(pgdat))
+		return -1;
+	return pfn;
+}
+#endif
 static unsigned long get_pte_pfn(pte_t pte, struct vm_area_struct *vma, unsigned long addr,
 				 struct pglist_data *pgdat)
 {
@@ -3751,7 +3776,7 @@ static struct folio* follow_address(struct vm_area_struct *vma, unsigned long ad
 		goto out;
 	if (pte_none(*ptep) || !pte_present(*ptep)) 
 		goto unmap;
-	pfn = get_pte_pfn(*ptep, vma, address, pgdat);
+	pfn = get_pte_pfn_vma(*ptep, vma, address, pgdat);
 	if (pfn == -1)
 		goto unmap;
 	folio = get_pfn_folio(pfn, memcg, pgdat, true);
@@ -4492,16 +4517,17 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	int remaining = MAX_LRU_BATCH;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
-
+	
 	VM_WARN_ON_ONCE(!list_empty(list));
-
+	
 	if (get_nr_gens(lruvec, type) == MIN_NR_GENS)
-		return 0;
+	return 0;
 
-	gen = lru_gen_from_seq(lrugen->min_seq[type]);
+gen = lru_gen_from_seq(lrugen->min_seq[type]);
 
-	for (i = MAX_NR_ZONES; i > 0; i--) {
+for (i = MAX_NR_ZONES; i > 0; i--) {
 		LIST_HEAD(moved);
+		unsigned int seq_hits = 1;	
 		int skipped_zone = 0;
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
@@ -4509,13 +4535,16 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 
 		// this is not NULL only if prev folio was isolated
 		struct folio *prev_folio = NULL; 
-		sc->vma_reclamation = true;
+		if (max_swap_around)
+			sc->vma_reclamation = true;
+		else
+			sc->vma_reclamation = false;
 		#endif
 
 		while (!list_empty(head)) {
 			struct folio *folio;
 			#ifdef CONFIG_VMA_RECLAIM
-			int is_sequential = 0;
+			unsigned int is_sequential = 0;
 			if (sc->vma_reclamation && prev_folio && !folio_is_file_lru(prev_folio)){
 				folio = get_next_folio_for_folio(prev_folio);
 				/** if the next folio is file mapped, a different zone, not on the LRU or is in a different gen than the one we are scanning 
@@ -4529,6 +4558,7 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 					sc->vma_reclamation = false;
 					folio = lru_to_folio(head);
 					is_sequential = 0;
+					seq_hits = 0;
 				}
 				else
 					is_sequential = 1;
@@ -4536,8 +4566,9 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 			else{
 				is_sequential = 0;
 				folio = lru_to_folio(head);
+				seq_hits = 1;
 			}
-			trace_mm_vmscan_scan_folios(folio, prev_folio, is_sequential, sc->vma_reclamation, zone, type, gen);
+			trace_mm_vmscan_scan_folios(folio, prev_folio, is_sequential, sc->vma_reclamation, zone, type, gen, seq_hits);
 			prev_folio = NULL;
 			#else 
 			folio = lru_to_folio(head);
@@ -4557,15 +4588,25 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 				list_add(&folio->lru, list);
 				isolated += delta;
 				#ifdef CONFIG_VMA_RECLAIM
-				prev_folio = folio; // save the isolated folio for vma reclaim
+					prev_folio = folio; // save the isolated folio for vma reclaim
 				#endif
 			} else {
 				list_move(&folio->lru, &moved);
 				skipped_zone += delta;
 			}
-
+			#ifdef CONFIG_VMA_RECLAIM
+			if (sc->vma_reclamation){
+				if (!--remaining || skipped_zone >= MIN_LRU_BATCH || seq_hits >= max_swap_around)
+					break;
+			}
+			else {
+				if (!--remaining || max(isolated, skipped_zone) >= MIN_LRU_BATCH)
+					break;
+			}
+			#else
 			if (!--remaining || max(isolated, skipped_zone) >= MIN_LRU_BATCH)
 				break;
+			#endif
 		}
 
 		if (skipped_zone) {

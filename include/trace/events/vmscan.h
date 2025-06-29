@@ -550,8 +550,8 @@ TRACE_EVENT(mm_vmscan_isolate_folio,
 #ifdef CONFIG_VMA_RECLAIM
 TRACE_EVENT(mm_vmscan_scan_folios,
 
-	TP_PROTO(struct folio *folio, struct folio *prev_folio, int is_seq, unsigned int vma_reclimation, int zone, int type, int gen),
-	TP_ARGS(folio, prev_folio, is_seq, vma_reclimation, zone, type, gen),
+	TP_PROTO(struct folio *folio, struct folio *prev_folio, int is_seq, unsigned int vma_reclimation, int zone, int type, int gen, unsigned int seq_hits),
+	TP_ARGS(folio, prev_folio, is_seq, vma_reclimation, zone, type, gen, seq_hits),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
 			__field(struct folio *, prev_folio)
@@ -560,6 +560,7 @@ TRACE_EVENT(mm_vmscan_scan_folios,
 		    __field(int, zone)
 		    __field(int, type)
 		    __field(int, gen)
+			__field(unsigned int, seq_hits)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
@@ -569,15 +570,18 @@ TRACE_EVENT(mm_vmscan_scan_folios,
 		__entry->zone = zone;
 		__entry->type = type;
 		__entry->gen = gen;
+		__entry->seq_hits = seq_hits;
 	),
-	TP_printk("folio=%p prev_folio=%p is_seq=%d vma_reclimation=%u zone=%d type=%d gen=%d",
+	TP_printk("folio=%p prev_folio=%p is_seq=%d vma_reclimation=%u zone=%d type=%d gen=%d seq_hits=%d",
 		__entry->folio,
 		__entry->prev_folio,
 		__entry->is_seq,
 		__entry->vma_reclimation,
 		__entry->zone,
 		__entry->type,
-		__entry->gen)
+		__entry->gen,
+		__entry->seq_hits
+	)
 );
 TRACE_EVENT(mm_vmscan_get_next_folio,
 	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
