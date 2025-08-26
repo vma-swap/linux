@@ -16,10 +16,10 @@ done
 # Build the QEMU command
 sudo chmod 0777 /dev/kvm
 QEMU_CMD="qemu-system-x86_64 \
-        -m 500M \
-        -smp 16 \
+        -m 2G \
+        -smp 1 \
         -kernel ./arch/x86/boot/bzImage \
-        -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr\" \
+        -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \
         -drive file=/scratch/bullseye.img,format=raw \
         -drive file=/scratch/vm_swap.img,format=raw,if=virtio \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:10021-:22 \
@@ -30,7 +30,8 @@ QEMU_CMD="qemu-system-x86_64 \
 
 # Add debugging options if -g is passed
 if [ $DEBUG_MODE -eq 1 ]; then
-  QEMU_CMD="$QEMU_CMD -s -S"
+  echo "Debug mode enabled"
+  QEMU_CMD="$QEMU_CMD  -s -S"
 fi
 
 # Run the QEMU command and log output
