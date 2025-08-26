@@ -799,7 +799,11 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	if ((long)left < 0)
 		left = 0;
 	*start = max3(left, vma->vm_start, faddr & PMD_MASK);
+	#ifdef CONFIG_SWAP_VMA
+	*end = min(right, vma->vm_end);
+	#else
 	*end = min3(right, vma->vm_end, (faddr & PMD_MASK) + PMD_SIZE);
+	#endif
 	trace_swap_vma_ra_win(vmf, *start, *end, faddr, prev_faddr, hits, win);
 	return win;
 }

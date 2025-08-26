@@ -30,10 +30,12 @@ struct pagevec;
 #define SWAP_FLAG_DISCARD_PAGES 0x40000 /* discard page-clusters after use */
 // add a new flag for row arrangement of clusters
 #define SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW	0x80000 /* arrange clusters by row */
+#define SWAP_FLAG_SYNCHRONOUS_IO_W	0x100000 /* synchronous IO is efficient */
 #define SWAP_FLAGS_VALID	(SWAP_FLAG_PRIO_MASK | SWAP_FLAG_PREFER | \
 				 SWAP_FLAG_DISCARD | SWAP_FLAG_DISCARD_ONCE | \
 				 SWAP_FLAG_DISCARD_PAGES | \
-				 SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW)
+				 SWAP_FLAG_ARRANGE_CLUSTERS_BY_ROW | \
+				 SWAP_FLAG_SYNCHRONOUS_IO_W)
 #define SWAP_BATCH 64
 
 static inline int current_is_kswapd(void)
@@ -222,6 +224,7 @@ enum {
 	SWP_SYNCHRONOUS_IO = (1 << 12),	/* synchronous IO is efficient */
 	SWP_ARRANGE_CLUSTERS_BY_ROW = (1 << 13), /* arrange clusters by row, default is by col to reduce false share */
 					/* add others here before... */
+	SWP_SYNCHRONOUS_IO_W = (1 <<14 ), /* for backward compatibility */
 };
 
 #define SWAP_CLUSTER_MAX 32UL

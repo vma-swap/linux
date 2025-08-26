@@ -659,6 +659,24 @@ TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
 		__entry->addr,
 		__entry->vma)
 );
+TRACE_EVENT(mm_vmscan_reclaim_page,
+	TP_PROTO(struct folio *folio, int node_id, int memcg_id),
+	TP_ARGS(folio, node_id, memcg_id),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, node_id)
+		    __field(int, memcg_id)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->node_id = node_id;
+		__entry->memcg_id = memcg_id;
+	),
+	TP_printk("folio=%p node_id=%d memcg_id=%d",
+		__entry->folio,
+		__entry->node_id,
+		__entry->memcg_id)
+);
 #endif
 #endif /* _TRACE_VMSCAN_H */
 

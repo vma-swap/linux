@@ -3783,8 +3783,15 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (si->bdev && bdev_stable_writes(si->bdev))
 		si->flags |= SWP_STABLE_WRITES;
 
-	if (si->bdev && bdev_synchronous(si->bdev))
+	if ((si->bdev && bdev_synchronous(si->bdev))){
+		printk(KERN_INFO "swapon: setting swap device with synchrnous IO\n");
 		si->flags |= SWP_SYNCHRONOUS_IO;
+		si->flags |= SWP_SYNCHRONOUS_IO_W;
+	}
+	else if (swap_flags & SWAP_FLAG_SYNCHRONOUS_IO_W){
+		printk(KERN_INFO "swapon: setting swap_flag_synchronous_io_w\n");
+		si->flags |= SWP_SYNCHRONOUS_IO_W;
+	}
 
 	if (si->bdev && bdev_nonrot(si->bdev)) {
 		si->flags |= SWP_SOLIDSTATE;

@@ -467,7 +467,7 @@ void __swap_writepage(struct folio *folio, struct writeback_control *wbc)
 	 * but that will never affect SWP_SYNCHRONOUS_IO, so the data_race
 	 * is safe.
 	 */
-	else if (data_race(sis->flags & SWP_SYNCHRONOUS_IO))
+	else if (data_race(sis->flags & SWP_SYNCHRONOUS_IO) || data_race(sis->flags & SWP_SYNCHRONOUS_IO_W))
 		swap_writepage_bdev_sync(folio, wbc, sis);
 	else
 		swap_writepage_bdev_async(folio, wbc, sis);
