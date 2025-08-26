@@ -2164,6 +2164,9 @@ static unsigned int reclaim_folio_list(struct list_head *folio_list,
 		folio = lru_to_folio(folio_list);
 		list_del(&folio->lru);
 		folio_putback_lru(folio);
+		#ifdef CONFIG_VMA_RECLAIM
+		trace_mm_vmscan_reclaim_page(folio, pgdat->node_id, mem_cgroup_id(folio_memcg(folio)));
+		#endif
 	}
 	trace_mm_vmscan_reclaim_pages(pgdat->node_id, sc.nr_scanned, nr_reclaimed, &stat);
 
@@ -4527,7 +4530,7 @@ gen = lru_gen_from_seq(lrugen->min_seq[type]);
 
 for (i = MAX_NR_ZONES; i > 0; i--) {
 		LIST_HEAD(moved);
-		unsigned int seq_hits = 1;	
+		int seq_hits = 1;	
 		int skipped_zone = 0;
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
@@ -4558,7 +4561,7 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 					sc->vma_reclamation = false;
 					folio = lru_to_folio(head);
 					is_sequential = 0;
-					seq_hits = 0;
+					seq_hits = 1;
 				}
 				else
 					is_sequential = 1;
@@ -4589,6 +4592,7 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 				isolated += delta;
 				#ifdef CONFIG_VMA_RECLAIM
 					prev_folio = folio; // save the isolated folio for vma reclaim
+					seq_hits += is_sequential;
 				#endif
 			} else {
 				list_move(&folio->lru, &moved);
