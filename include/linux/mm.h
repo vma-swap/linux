@@ -867,6 +867,9 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->si=NULL;
 	spin_lock_init(&vma->swap_lock);
 	#endif
+	#ifdef CONFIG_VMA_RECLAIM
+	vma->last_fault_offset = 0;
+	#endif
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma_mark_detached(vma, false);
 	vma_numab_state_init(vma);

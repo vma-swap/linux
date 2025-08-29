@@ -788,6 +788,9 @@ struct vm_area_struct {
    	struct swap_info_struct *si; // each VMA is connected to a swap struct
 	spinlock_t swap_lock; // protects vma->si
 #endif
+#ifdef CONFIG_VMA_RECLAIM
+	pgoff_t last_fault_offset; // this is used to detect sequential faults
+#endif
 } __randomize_layout;
 
 #ifdef CONFIG_NUMA
