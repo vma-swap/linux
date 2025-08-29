@@ -501,6 +501,9 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->si=NULL;
 	spin_lock_init(&vma->swap_lock);
 	#endif
+	#ifdefCONFIG_VMA_RECLAIM
+	vma->last_fault_offset = 0;
+	#endif
 }
 
 static inline struct vm_area_struct *vm_area_alloc(struct mm_struct *mm)

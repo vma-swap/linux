@@ -4443,6 +4443,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			if (likely(vmf->pte &&
 				   pte_same(ptep_get(vmf->pte), vmf->orig_pte)))
 				ret = VM_FAULT_OOM;
+			// eventhough we backed out, we can still save the last fault offset for sequential fault detection
+			#ifdef CONFIG_VMA_RECLAIM
+			trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), -1, -1); 
+			vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+			#endif
 			goto unlock;
 		}
 
@@ -4459,6 +4464,17 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		ret = VM_FAULT_HWPOISON;
 		goto out_release;
 	}
+	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+	#ifdef CONFIG_VMA_RECLAIM
+	// make sure private bit is off cause thats a bug
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
+	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
+		folio_set_private(folio);
+	else
+		folio_clear_private(folio);
+	// No save the current offset for next fault
+	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+	#endif
 	ret |= folio_lock_or_retry(folio, vmf);
 	if (ret & VM_FAULT_RETRY)
 		goto out_release;
@@ -4900,6 +4916,18 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		return 0;
 	if (!folio)
 		goto oom;
+
+	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+	#ifdef CONFIG_VMA_RECLAIM
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
+	// make sure private bit is off cause thats a bug
+	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
+		folio_set_private(folio);
+	else
+		folio_clear_private(folio);
+	// No save the current offset for next fault
+	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+	#endif
 
 	nr_pages = folio_nr_pages(folio);
 	addr = ALIGN_DOWN(vmf->address, nr_pages * PAGE_SIZE);

@@ -1049,6 +1049,9 @@ __always_inline bool free_pages_prepare(struct page *page,
 	bool init = want_init_on_free();
 	bool compound = PageCompound(page);
 	struct folio *folio = page_folio(page);
+	#ifdef CONFIG_VMA_RECLAIM
+	folio_clear_private(folio);
+	#endif
 
 	VM_BUG_ON_PAGE(PageTail(page), page);
 

@@ -560,6 +560,26 @@ TRACE_EVENT(commit_merge,
         __entry->start, __entry->end)
     #endif /* CONFIG_SWAP_VMA */
 );
+TRACE_EVENT(vma_fault, 
+    TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, unsigned long old_fadrr, int old_flag, int new_flag),
+    TP_ARGS(vma, faddr, old_fadrr, old_flag, new_flag),
+    TP_STRUCT__entry(
+        __field(unsigned long, vma)
+        __field(unsigned long, faddr)
+        __field(unsigned long, old_fadrr)
+        __field(int, old_flag)
+        __field(int, new_flag)
+    ),
+    TP_fast_assign(
+        __entry->vma = (unsigned long)vma;
+        __entry->faddr = faddr;
+        __entry->old_fadrr = old_fadrr;
+        __entry->old_flag = old_flag;
+        __entry->new_flag = new_flag;
+    ),
+    TP_printk("vma=%lx faddr=%lx old_fadrr=%lx old_flag=%d new_flag=%d",
+        __entry->vma, __entry->faddr, __entry->old_fadrr, __entry->old_flag, __entry->new_flag)
+);
 #endif /* _TRACE_SWAP_H */
 
 /* This part must be outside protection */
