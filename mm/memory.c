@@ -4451,6 +4451,18 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			goto unlock;
 		}
 
+		// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+		#ifdef CONFIG_VMA_RECLAIM
+		// make sure private bit is off cause thats a bug
+		trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1); 
+		if (vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1)
+			folio_set_private(folio);
+		else
+			folio_clear_private(folio);
+		// No save the current offset for next fault
+		vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+		#endif
+
 		/* Had to read the page from swap area: Major fault */
 		ret = VM_FAULT_MAJOR;
 		count_vm_event(PGMAJFAULT);
