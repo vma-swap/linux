@@ -601,6 +601,35 @@ TRACE_EVENT(mm_vmscan_get_next_folio,
 		__entry->addr,
 		__entry->vma)
 );
+TRACE_EVENT(mm_vmscan_get_prev_folio,
+	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
+	TP_ARGS(folio, addr, vma),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(unsigned long, addr)
+		    __field(struct vm_area_struct *, vma)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->addr = addr;
+		__entry->vma = vma;
+	),
+	TP_printk("folio=%p addr=0x%lx vma=%p",
+		__entry->folio,
+		__entry->addr,
+		__entry->vma)
+);
+TRACE_EVENT(mm_vmscan_get_first_folio_in_seq,
+	TP_PROTO(struct folio *folio),
+	TP_ARGS(folio),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+	),
+	TP_printk("folio=%p", __entry->folio)
+);
 TRACE_EVENT(mm_vmscan_follow_address,
 	TP_PROTO(struct vm_area_struct *vma, unsigned long addr, unsigned long pgd_val, 
 			unsigned long p4d_val, unsigned long pud_val, unsigned long pmd_val, unsigned long pte_val, unsigned long pfn, struct folio *folio),
@@ -627,7 +656,7 @@ TRACE_EVENT(mm_vmscan_follow_address,
 		__entry->pfn = pfn;
 		__entry->folio = folio;
 	),
-	TP_printk("vma=%p addr=0x%lx pgd_val=0x%lx p4d_val=0x%lx pud_val=0x%lx pmd_val=0x%lx pte_val=0x%lx pfn=0x%lx folio=%p",
+	TP_printk("vma=%p addr=0x%lx pgd_val=0x%lx p4d_val=0x%lx pud_val=0x%lx pmd_val=0x%lx pte_val=0x%lx pfn=0x%lx folio=%p order=%d",
 		__entry->vma,
 		__entry->addr,
 		__entry->pgd_val,
@@ -636,7 +665,9 @@ TRACE_EVENT(mm_vmscan_follow_address,
 		__entry->pmd_val,
 		__entry->pte_val,
 		__entry->pfn,
-		__entry->folio)
+		__entry->folio,
+		__entry->folio ? folio_order(__entry->folio) : -1)
+
 );
 TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
 	TP_PROTO(struct folio *cur_folio, struct folio *next_folio, unsigned long addr, struct vm_area_struct *vma),
@@ -656,6 +687,27 @@ TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
 	TP_printk("cur_folio=%p next_folio=%p next_addr=0x%lx vma=%p",
 		__entry->cur_folio,
 		__entry->next_folio,
+		__entry->addr,
+		__entry->vma)
+);
+TRACE_EVENT(mm_vmscan_get_prev_folio_for_folio,
+	TP_PROTO(struct folio *cur_folio, struct folio *prev_folio, unsigned long addr, struct vm_area_struct *vma),
+	TP_ARGS(cur_folio, prev_folio, addr, vma),
+	TP_STRUCT__entry(
+		    __field(struct folio *, cur_folio)
+		    __field(struct folio *, prev_folio)
+		    __field(unsigned long, addr)
+		    __field(struct vm_area_struct *, vma)
+	),
+	TP_fast_assign(
+		__entry->cur_folio = cur_folio;
+		__entry->prev_folio = prev_folio;
+		__entry->addr = addr;
+		__entry->vma = vma;
+	),
+	TP_printk("cur_folio=%p prev_folio=%p prev_addr=0x%lx vma=%p",
+		__entry->cur_folio,
+		__entry->prev_folio,
 		__entry->addr,
 		__entry->vma)
 );

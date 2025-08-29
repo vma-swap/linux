@@ -3774,6 +3774,16 @@ static struct folio* follow_address(struct vm_area_struct *vma, unsigned long ad
 	pmd = pmd_offset(pud, address);
 	if (pmd_none(*pmd) || pmd_bad(*pmd))
 		goto out;
+	// check if pmd is huge
+	if (is_huge_zero_pmd(*pmd) || pmd_trans_huge(*pmd)) {
+		pfn = get_pmd_pfn(*pmd, vma, address, pgdat);
+		if (pfn != -1)
+		{
+			folio = get_pfn_folio(pfn, memcg, pgdat, true);
+			VM_BUG_ON_FOLIO(folio_order(folio) != PMD_ORDER, folio);
+		}
+		goto out;
+	}
 	ptep = pte_offset_map(pmd, address);
 	if (!ptep)
 		goto out;
@@ -3790,22 +3800,21 @@ static struct folio* follow_address(struct vm_area_struct *vma, unsigned long ad
 		trace_mm_vmscan_follow_address(vma, address, pgd_val(*pgd), p4d_val(*p4d), pud_val(*pud), pmd_val(*pmd), pte_val(*ptep), pfn, folio);
 		return folio;
 }
-struct vma_reclaim_rmap_data {
-	unsigned long addr;
-	struct vm_area_struct *vma;
-};
 
-struct vma_reclaim_rmap_data_next_foilio {
+struct vma_reclaim_rmap_data {
 	unsigned long cur_addr;
 	struct vm_area_struct *vma;
 	struct folio *next_folio;
 	unsigned long next_addr;
+	struct folio *prev_folio;
+	unsigned long prev_addr;
+
 };
 
 static bool get_next_folio(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
 {
-	struct vma_reclaim_rmap_data_next_foilio *data = arg;
+	struct vma_reclaim_rmap_data *data = arg;
 
 	if (!vma)
 		return true; // continue walking
@@ -3818,8 +3827,26 @@ static bool get_next_folio(struct folio *folio, struct vm_area_struct *vma,
 	data->vma = vma;
 	return false;
 }
+
+static bool get_prev_folio(struct folio *folio, struct vm_area_struct *vma,
+		     unsigned long address, void *arg)
+{
+	struct vma_reclaim_rmap_data *data = arg;
+	if (!vma)
+		return true; // continue walking
+	unsigned long step = PAGE_SIZE << folio_order(folio);
+	unsigned long prev_addr = address - step;
+	if (address < vma->vm_start + step)
+		return true; // continue walking
+	struct folio *prev_folio = follow_address(vma, prev_addr, folio_memcg(folio), folio_pgdat(folio));
+	trace_mm_vmscan_get_prev_folio(prev_folio, prev_addr, vma);
+	data->prev_folio = prev_folio;
+	data->prev_addr = prev_addr;
+	data->vma = vma;
+	return false;
+}
 static struct folio* get_next_folio_for_folio(struct folio* cur_folio){
-	struct vma_reclaim_rmap_data_next_foilio data = {
+	struct vma_reclaim_rmap_data data = {
 		.next_folio = NULL,
 	};
 	struct rmap_walk_control rwc = {
@@ -3832,6 +3859,36 @@ static struct folio* get_next_folio_for_folio(struct folio* cur_folio){
 	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
 	trace_mm_vmscan_get_next_folio_for_folio(cur_folio, data.next_folio, data.next_addr, data.vma);
 	return data.next_folio;
+}
+
+static struct folio* get_prev_folio_for_folio(struct folio* cur_folio){
+	struct vma_reclaim_rmap_data data = {
+		.prev_folio = NULL,
+	};
+	struct rmap_walk_control rwc = {
+		.rmap_one = get_prev_folio,
+		.arg = &data,
+		.done = NULL,
+		.anon_lock = folio_lock_anon_vma_read,
+	};
+	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(cur_folio), cur_folio);
+	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+	trace_mm_vmscan_get_prev_folio_for_folio(cur_folio, data.prev_folio, data.prev_addr, data.vma);
+	return data.prev_folio;
+}
+
+static struct folio* get_first_folio_in_seq(struct folio* cur_folio){
+	struct folio* first = cur_folio;
+	VM_BUG_ON_FOLIO(!folio_test_anon(cur_folio), cur_folio);
+	if(!cur_folio)
+		return NULL;
+	struct folio *prev;
+	while((prev = get_prev_folio_for_folio(first)) != NULL && folio_test_private(prev)){
+		VM_BUG_ON_FOLIO(!folio_test_anon(prev), cur_folio);
+		first = prev;
+		trace_mm_vmscan_get_first_folio_in_seq(first);
+	}
+	return first;
 }
 #endif
 
@@ -4520,7 +4577,9 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	int remaining = MAX_LRU_BATCH;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
-	
+	#ifdef CONFIG_VMA_RECLAIM
+	int folio_isolated = false;
+	#endif
 	VM_WARN_ON_ONCE(!list_empty(list));
 	
 	if (get_nr_gens(lruvec, type) == MIN_NR_GENS)
@@ -4535,9 +4594,6 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
 		#ifdef CONFIG_VMA_RECLAIM
-
-		// this is not NULL only if prev folio was isolated
-		struct folio *prev_folio = NULL; 
 		if (max_swap_around)
 			sc->vma_reclamation = true;
 		else
@@ -4546,36 +4602,7 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 
 		while (!list_empty(head)) {
 			struct folio *folio;
-			#ifdef CONFIG_VMA_RECLAIM
-			unsigned int is_sequential = 0;
-			if (sc->vma_reclamation && prev_folio && !folio_is_file_lru(prev_folio)){
-				folio = get_next_folio_for_folio(prev_folio);
-				/** if the next folio is file mapped, a different zone, not on the LRU or is in a different gen than the one we are scanning 
-				then this means that our sequential swap out has failed and we fall back to the regular LRU scan.
-				 **/ 
-				if(!folio || 
-					folio_is_file_lru(folio) ||
-					folio_zonenum(folio) != zone ||
-					!folio_test_lru(folio) ||
-				 	!(folio_lru_gen(folio) == gen)){
-					sc->vma_reclamation = false;
-					folio = lru_to_folio(head);
-					is_sequential = 0;
-					seq_hits = 1;
-				}
-				else
-					is_sequential = 1;
-			}
-			else{
-				is_sequential = 0;
-				folio = lru_to_folio(head);
-				seq_hits = 1;
-			}
-			trace_mm_vmscan_scan_folios(folio, prev_folio, is_sequential, sc->vma_reclamation, zone, type, gen, seq_hits);
-			prev_folio = NULL;
-			#else 
 			folio = lru_to_folio(head);
-			#endif
 			int delta = folio_nr_pages(folio);
 
 			VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
@@ -4591,8 +4618,8 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 				list_add(&folio->lru, list);
 				isolated += delta;
 				#ifdef CONFIG_VMA_RECLAIM
-					prev_folio = folio; // save the isolated folio for vma reclaim
-					seq_hits += is_sequential;
+					seq_hits += 1;
+					folio_isolated = true;
 				#endif
 			} else {
 				list_move(&folio->lru, &moved);
@@ -4600,9 +4627,50 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 			}
 			#ifdef CONFIG_VMA_RECLAIM
 			if (sc->vma_reclamation){
-				if (!--remaining || skipped_zone >= MIN_LRU_BATCH || seq_hits >= max_swap_around)
-					break;
+				//fist we check if the page was isolated for swapout
+				if (folio_isolated){
+					// now we swap out its entire sequential set of folios
+					struct folio *evictable_folio = get_first_folio_in_seq(folio);
+					while(evictable_folio && evictable_folio != folio && seq_hits < max_swap_around){
+						if(!evictable_folio ||
+							folio_is_file_lru(evictable_folio) ||
+							folio_zonenum(evictable_folio) != zone ||
+							!folio_test_lru(evictable_folio) ||
+							!folio_test_private(evictable_folio)
+							){
+								sc->vma_reclamation = false;
+								break;
+							}
+							
+						else {
+							VM_WARN_ON_ONCE_FOLIO((folio_lru_gen(evictable_folio) != gen), evictable_folio);
+							int delta = folio_nr_pages(folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
+
+							scanned += delta;
+
+							if (sort_folio(lruvec, folio, sc, tier))
+								sorted += delta;
+							else if (isolate_folio(lruvec, folio, sc)) {
+								list_add(&folio->lru, list);
+								isolated += delta;
+								seq_hits++;
+							} else {
+								list_move(&folio->lru, &moved);
+								skipped_zone += delta;
+							}
+							if (seq_hits >= max_swap_around)
+								break;
+						}
+					}
+				}
 			}
+			if (!--remaining || skipped_zone >= MIN_LRU_BATCH || seq_hits >= max_swap_around)
+				break;
+			
 			else {
 				if (!--remaining || max(isolated, skipped_zone) >= MIN_LRU_BATCH)
 					break;
