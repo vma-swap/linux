@@ -3834,12 +3834,16 @@ static bool get_prev_folio(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
 {
 	struct vma_reclaim_rmap_data *data = arg;
-	if (!vma)
+	if (!vma){
+		printk(KERN_ERR "get_prev_folio: vma is NULL\n");
 		return true; // continue walking
+	}
 	unsigned long step = PAGE_SIZE << folio_order(folio);
 	unsigned long prev_addr = address - step;
-	if (address < vma->vm_start + step)
+	if (address < vma->vm_start){
+		printk(KERN_ERR "get_prev_folio: address %lx is out of vma range [%lx, %lx)\n", address, vma->vm_start, vma->vm_end);
 		return true; // continue walking
+	}
 	struct folio *prev_folio = follow_address(vma, prev_addr, folio_memcg(folio), folio_pgdat(folio));
 	trace_mm_vmscan_get_prev_folio(prev_folio, prev_addr, vma);
 	data->prev_folio = prev_folio;
@@ -3882,10 +3886,12 @@ static struct folio* get_prev_folio_for_folio(struct folio* cur_folio){
 static struct folio* get_first_folio_in_seq(struct folio* cur_folio){
 	struct folio* first = cur_folio;
 	VM_BUG_ON_FOLIO(!folio_test_anon(cur_folio), cur_folio);
-	if(!cur_folio)
+	if(!cur_folio){
+		printk(KERN_ERR "get_first_folio_in_seq: cur_folio is NULL\n");
 		return NULL;
+	}
 	struct folio *prev;
-	while((prev = get_prev_folio_for_folio(first)) != NULL && folio_test_private(prev)){
+	while((prev = get_prev_folio_for_folio(first)) != NULL && folio_test_seq(prev)){
 		VM_BUG_ON_FOLIO(!folio_test_anon(prev), cur_folio);
 		first = prev;
 		trace_mm_vmscan_get_first_folio_in_seq(first);
@@ -4596,14 +4602,15 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
 		#ifdef CONFIG_VMA_RECLAIM
-		if (max_swap_around)
-			sc->vma_reclamation = true;
-		else
-			sc->vma_reclamation = false;
+		// if (max_swap_around)
+		// 	sc->vma_reclamation = true;
+		// else
+		sc->vma_reclamation = false;
 		#endif
 
 		while (!list_empty(head)) {
 			struct folio *folio;
+			folio_isolated = false;
 			folio = lru_to_folio(head);
 			int delta = folio_nr_pages(folio);
 
@@ -4622,6 +4629,7 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 				#ifdef CONFIG_VMA_RECLAIM
 					seq_hits += 1;
 					folio_isolated = true;
+					printk(KERN_DEBUG "vma_reclaim: isolated folio %pK\n", folio);
 				#endif
 			} else {
 				list_move(&folio->lru, &moved);
@@ -4641,9 +4649,9 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 						}
 						if(!evictable_folio ||
 							folio_is_file_lru(evictable_folio) ||
-							folio_zonenum(evictable_folio) != zone ||
 							!folio_test_lru(evictable_folio) ||
-							!folio_test_private(evictable_folio)
+							!folio_test_seq(evictable_folio) ||
+							!folio_evictable(evictable_folio)
 							)
 						{
 							sc->vma_reclamation = false;
@@ -4651,24 +4659,22 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 						}
 							
 						else {
+							int delta = folio_nr_pages(evictable_folio);
 							VM_WARN_ON_ONCE_FOLIO((folio_lru_gen(evictable_folio) != gen), evictable_folio);
-							int delta = folio_nr_pages(folio);
-							VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
-							VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
-							VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
-							VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(evictable_folio), evictable_folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_test_active(evictable_folio), evictable_folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(evictable_folio) != type, evictable_folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_zonenum(evictable_folio) != zone, evictable_folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_memcg(evictable_folio) != lruvec_memcg(lruvec), evictable_folio);
+							VM_WARN_ON_ONCE_FOLIO(folio_lruvec(evictable_folio) != lruvec, evictable_folio);
 
 							scanned += delta;
-
-							if (sort_folio(lruvec, folio, sc, tier))
-								sorted += delta;
-							else if (isolate_folio(lruvec, folio, sc)) {
-								list_add(&folio->lru, list);
+							struct lruvec *evictable_lruvec = folio_lruvec(evictable_folio);
+							if (isolate_folio(evictable_lruvec, evictable_folio, sc)) {
+								printk(KERN_DEBUG "vma_reclaim: isolated folio in vma reclaim %pK\n", evictable_folio);
+								list_add(&evictable_folio->lru, list);
 								isolated += delta;
 								seq_hits++;
-							} else {
-								list_move(&folio->lru, &moved);
-								skipped_zone += delta;
 							}
 							if (seq_hits >= max_swap_around)
 								break;
@@ -4717,6 +4723,7 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 	 * There might not be eligible folios due to reclaim_idx. Check the
 	 * remaining to prevent livelock if it's not making progress.
 	 */
+	printk(KERN_DEBUG "folio_isolate: isolated %d folios", isolated);
 	return isolated || !remaining ? scanned : 0;
 }
 

@@ -127,6 +127,9 @@ enum pageflags {
 #ifdef CONFIG_ARCH_USES_PG_ARCH_3
 	PG_arch_3,
 #endif
+#ifdef CONFIG_VMA_RECLAIM
+	PG_seq,
+#endif
 	__NR_PAGEFLAGS,
 
 	PG_readahead = PG_reclaim,
@@ -566,7 +569,11 @@ FOLIO_FLAG(readahead, FOLIO_HEAD_PAGE)
 FOLIO_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 	FOLIO_TEST_CLEAR_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(dropbehind, FOLIO_HEAD_PAGE)
-
+#ifdef CONFIG_VMA_RECLAIM
+FOLIO_FLAG(seq, FOLIO_HEAD_PAGE)
+	__FOLIO_CLEAR_FLAG(seq, FOLIO_HEAD_PAGE)
+	__FOLIO_SET_FLAG(seq, FOLIO_HEAD_PAGE)
+#endif
 #ifdef CONFIG_HIGHMEM
 /*
  * Must use a macro here due to header dependency issues. page_zone() is not
@@ -1156,6 +1163,7 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 	 1UL << PG_private	| 1UL << PG_private_2	|	\
 	 1UL << PG_writeback	| 1UL << PG_reserved	|	\
 	 1UL << PG_active 	|				\
+	 1UL << PG_seq | \
 	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK)
 
 /*

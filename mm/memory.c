@@ -4451,14 +4451,14 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			goto unlock;
 		}
 
-		// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+		// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 		#ifdef CONFIG_VMA_RECLAIM
-		// make sure private bit is off cause thats a bug
-		trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1); 
+		// make sure seq bit is off cause thats a bug
+		trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1); 
 		if (vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1)
-			folio_set_private(folio);
+			folio_set_seq(folio);
 		else
-			folio_clear_private(folio);
+			folio_clear_seq(folio);
 		// No save the current offset for next fault
 		vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
 		#endif
@@ -4476,14 +4476,14 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		ret = VM_FAULT_HWPOISON;
 		goto out_release;
 	}
-	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 	#ifdef CONFIG_VMA_RECLAIM
-	// make sure private bit is off cause thats a bug
-	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
+	// make sure seq bit is off cause thats a bug
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
 	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
-		folio_set_private(folio);
+		folio_set_seq(folio);
 	else
-		folio_clear_private(folio);
+		folio_clear_seq(folio);
 	// No save the current offset for next fault
 	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
 	#endif
@@ -4929,14 +4929,14 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (!folio)
 		goto oom;
 
-	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag private as it is not used for anon folios
+	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 	#ifdef CONFIG_VMA_RECLAIM
-	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_private(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
-	// make sure private bit is off cause thats a bug
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
+	// make sure seq bit is off cause thats a bug
 	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
-		folio_set_private(folio);
+		folio_set_seq(folio);
 	else
-		folio_clear_private(folio);
+		folio_clear_seq(folio);
 	// No save the current offset for next fault
 	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
 	#endif
