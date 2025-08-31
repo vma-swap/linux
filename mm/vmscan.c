@@ -3793,11 +3793,11 @@ static struct folio* follow_address(struct vm_area_struct *vma, unsigned long ad
 	if (pfn == -1)
 		goto unmap;
 	folio = get_pfn_folio(pfn, memcg, pgdat, true);
+	trace_mm_vmscan_follow_address(vma, address, pgd_val(*pgd), p4d_val(*p4d), pud_val(*pud), pmd_val(*pmd), pte_val(*ptep), pfn, folio);
 	
 	unmap:
 		pte_unmap(ptep);
 	out:
-		trace_mm_vmscan_follow_address(vma, address, pgd_val(*pgd), p4d_val(*p4d), pud_val(*pud), pmd_val(*pmd), pte_val(*ptep), pfn, folio);
 		return folio;
 }
 
@@ -4602,9 +4602,9 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
 		#ifdef CONFIG_VMA_RECLAIM
-		// if (max_swap_around)
-		// 	sc->vma_reclamation = true;
-		// else
+		if (max_swap_around)
+			sc->vma_reclamation = true;
+		else
 		sc->vma_reclamation = false;
 		#endif
 
@@ -4629,7 +4629,6 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 				#ifdef CONFIG_VMA_RECLAIM
 					seq_hits += 1;
 					folio_isolated = true;
-					printk(KERN_DEBUG "vma_reclaim: isolated folio %pK\n", folio);
 				#endif
 			} else {
 				list_move(&folio->lru, &moved);
@@ -4671,7 +4670,6 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 							scanned += delta;
 							struct lruvec *evictable_lruvec = folio_lruvec(evictable_folio);
 							if (isolate_folio(evictable_lruvec, evictable_folio, sc)) {
-								printk(KERN_DEBUG "vma_reclaim: isolated folio in vma reclaim %pK\n", evictable_folio);
 								list_add(&evictable_folio->lru, list);
 								isolated += delta;
 								seq_hits++;
@@ -4723,7 +4721,6 @@ for (i = MAX_NR_ZONES; i > 0; i--) {
 	 * There might not be eligible folios due to reclaim_idx. Check the
 	 * remaining to prevent livelock if it's not making progress.
 	 */
-	printk(KERN_DEBUG "folio_isolate: isolated %d folios", isolated);
 	return isolated || !remaining ? scanned : 0;
 }
 
