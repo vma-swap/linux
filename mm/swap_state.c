@@ -183,7 +183,7 @@ bool add_to_swap(struct folio *folio)
 {
 	swp_entry_t entry;
 	int err;
-
+	trace_add_to_swap_entry(folio, folio_ref_count(folio));
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(!folio_test_uptodate(folio), folio);
 
@@ -222,7 +222,7 @@ bool add_to_swap(struct folio *folio)
 	 * for the folio solves the problem.
 	 */
 	folio_mark_dirty(folio);
-
+	trace_add_to_swap(folio, swp_type(entry), swp_offset(entry), folio_ref_count(folio));
 	return true;
 
 fail:

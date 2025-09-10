@@ -16,7 +16,7 @@ done
 # Build the QEMU command
 sudo chmod 0777 /dev/kvm
 QEMU_CMD="qemu-system-x86_64 \
-        -m 2G \
+        -m 525M \
         -smp 1 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \
@@ -37,9 +37,9 @@ fi
 # Run the QEMU command and log output
 eval $QEMU_CMD 2>&1 | tee vm.log
 # for i in {1..100}; do dd if=/dev/zero of=/scratch/vma_swaps/swapfile_$i.swap bs=1G count=1 status=progress; done     
-# ./minimal_bench/a.out -s 50 -b 536870912 100 -i 100 -r 1 -w 1 
+./minimal_bench/a.out -s 200 -b 536870912 100 -i 100 -r 1 -w 1 
 # for i in {1..200}; do
-#   sudo mkswap /scratch/vma_swaps/swapfile_$i.swap
+#   sudo swapon /scratch/vma_swaps/swapfile_$i.swap
 # done
 
 # for i in {72..200}; do

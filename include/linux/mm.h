@@ -869,6 +869,10 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	vma->last_fault_offset = 0;
+	vma->window_start = 0;
+	vma->window_end = 0;
+	vma->swap_ahead_size = MIN_LRU_BATCH;
+	spin_lock_init(&vma->reclaim_lock);
 	#endif
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma_mark_detached(vma, false);
@@ -1449,6 +1453,8 @@ static inline bool put_devmap_managed_folio_refs(struct folio *folio, int refs)
 #define folio_ref_zero_or_close_to_overflow(folio) \
 	((unsigned int) folio_ref_count(folio) + 127u <= 127u)
 
+void mm_trace_folio_get(struct folio *folio, int count);
+void mm_trace_folio_put(struct folio *folio, int count);
 /**
  * folio_get - Increment the reference count on a folio.
  * @folio: The folio.
@@ -1459,8 +1465,11 @@ static inline bool put_devmap_managed_folio_refs(struct folio *folio, int refs)
  */
 static inline void folio_get(struct folio *folio)
 {
+	mm_trace_folio_get(folio, folio_ref_count(folio));
 	VM_BUG_ON_FOLIO(folio_ref_zero_or_close_to_overflow(folio), folio);
 	folio_ref_inc(folio);
+	mm_trace_folio_get(folio, folio_ref_count(folio));
+
 }
 
 static inline void get_page(struct page *page)
@@ -1492,8 +1501,11 @@ static inline __must_check bool try_get_page(struct page *page)
  */
 static inline void folio_put(struct folio *folio)
 {
-	if (folio_put_testzero(folio))
+	if (folio_put_testzero(folio)){
+		mm_trace_folio_put(folio, folio_ref_count(folio));
 		__folio_put(folio);
+	}
+	mm_trace_folio_put(folio, folio_ref_count(folio));
 }
 
 /**

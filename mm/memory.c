@@ -80,6 +80,7 @@
 
 #include <trace/events/kmem.h>
 #include <trace/events/swap.h>
+#include <trace/events/vmscan.h>
 
 #include <asm/io.h>
 #include <asm/mmu_context.h>
@@ -181,7 +182,23 @@ void mm_trace_rss_stat(struct mm_struct *mm, int member)
 {
 	trace_rss_stat(mm, member);
 }
+void mm_trace_folio_put(struct folio *folio, int ref_count)
+{
+	trace_folio_put(folio, ref_count);
+}
+EXPORT_SYMBOL_GPL(mm_trace_folio_put);
 
+void mm_trace_folio_get(struct folio *folio, int ref_count)
+{
+	trace_folio_get(folio, ref_count);
+}
+EXPORT_SYMBOL_GPL(mm_trace_folio_get);
+
+void page_ref_trace_folio_ref_add_unless(struct folio *folio, int ref_count)
+{
+	trace_folio_ref_add_unless(folio, ref_count);
+}
+EXPORT_SYMBOL_GPL(page_ref_trace_folio_ref_add_unless);
 /*
  * Note: this doesn't free the actual pages themselves. That
  * has been handled earlier when unmapping all the memory regions.
@@ -1006,11 +1023,15 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 
 		nr = folio_pte_batch(folio, addr, src_pte, pte, max_nr, flags,
 				     &any_writable, NULL, NULL);
+		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 		folio_ref_add(folio, nr);
+		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 		if (folio_test_anon(folio)) {
 			if (unlikely(folio_try_dup_anon_rmap_ptes(folio, page,
 								  nr, src_vma))) {
+				trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 				folio_ref_sub(folio, nr);
+				trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio), "copy_present_ptes");
 				return -EAGAIN;
 			}
 			rss[MM_ANONPAGES] += nr;
@@ -4444,24 +4465,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				   pte_same(ptep_get(vmf->pte), vmf->orig_pte)))
 				ret = VM_FAULT_OOM;
 			// eventhough we backed out, we can still save the last fault offset for sequential fault detection
-			#ifdef CONFIG_VMA_RECLAIM
-			trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), -1, -1); 
-			vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
-			#endif
 			goto unlock;
 		}
-
-		// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
-		#ifdef CONFIG_VMA_RECLAIM
-		// make sure seq bit is off cause thats a bug
-		trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1); 
-		if (vmf->pgoff == vmf->pgoff - vmf->vma->vm_pgoff + 1)
-			folio_set_seq(folio);
-		else
-			folio_clear_seq(folio);
-		// No save the current offset for next fault
-		vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
-		#endif
 
 		/* Had to read the page from swap area: Major fault */
 		ret = VM_FAULT_MAJOR;
@@ -4476,17 +4481,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		ret = VM_FAULT_HWPOISON;
 		goto out_release;
 	}
-	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
-	#ifdef CONFIG_VMA_RECLAIM
-	// make sure seq bit is off cause thats a bug
-	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
-	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
-		folio_set_seq(folio);
-	else
-		folio_clear_seq(folio);
-	// No save the current offset for next fault
-	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
-	#endif
+	
 	ret |= folio_lock_or_retry(folio, vmf);
 	if (ret & VM_FAULT_RETRY)
 		goto out_release;
@@ -4686,7 +4681,9 @@ check_folio:
 		}
 		rmap_flags |= RMAP_EXCLUSIVE;
 	}
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_swap_page");
 	folio_ref_add(folio, nr_pages - 1);
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_swap_page");
 	flush_icache_pages(vma, page, nr_pages);
 	vmf->orig_pte = pte_advance_pfn(pte, page_idx);
 
@@ -4737,6 +4734,28 @@ check_folio:
 	}
 
 	/* No need to invalidate - it was non-present before */
+	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
+	#ifdef CONFIG_VMA_RECLAIM
+	unsigned long flags;
+	spin_lock_irqsave(&vma->reclaim_lock, flags);
+	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1 || vmf->pgoff - vmf->vma->vm_pgoff == 0)
+		folio_set_seq(folio);
+	else
+		folio_clear_seq(folio);
+	if (vmf->pgoff - vmf->vma->vm_pgoff >= vma->window_start && vmf->pgoff - vmf->vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
+		// fault outside window, reset window
+		vma->window_start = 0;
+		vma->window_end = 0;
+		vma->swap_ahead_size = MIN_LRU_BATCH;
+	}
+	unsigned long old_addr = vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT);
+	pgoff_t start = vmf->vma->window_start;
+	pgoff_t end = vmf->vma->window_end;
+	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+	size_t swap_ahead = vma->swap_ahead_size;
+	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff, start, end, swap_ahead, folio,folio_ref_count(folio));
+	#endif
 	update_mmu_cache_range(vmf, vma, address, ptep, nr_pages);
 unlock:
 	if (vmf->pte)
@@ -4842,6 +4861,7 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 		addr = ALIGN_DOWN(vmf->address, PAGE_SIZE << order);
 		folio = vma_alloc_folio(gfp, order, vma, addr);
 		if (folio) {
+			trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"alloc_anon_folio");
 			if (mem_cgroup_charge(folio, vma->vm_mm, gfp)) {
 				count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK_CHARGE);
 				folio_put(folio);
@@ -4931,14 +4951,26 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 
 	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 	#ifdef CONFIG_VMA_RECLAIM
-	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT), folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1); 
-	// make sure seq bit is off cause thats a bug
-	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1)
+	unsigned long flags;
+	spin_lock_irqsave(&vma->reclaim_lock, flags);
+	if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset + 1 || vmf->pgoff - vmf->vma->vm_pgoff == 0)
 		folio_set_seq(folio);
 	else
 		folio_clear_seq(folio);
-	// No save the current offset for next fault
+	// Now save the current offset for next fault
+	if (vmf->pgoff - vmf->vma->vm_pgoff >= vma->window_start && vmf->pgoff - vmf->vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
+		// fault outside window, reset window
+		vma->window_start = 0;
+		vma->window_end = 0;
+		vma->swap_ahead_size = MIN_LRU_BATCH;
+	}
+	unsigned long old_addr = vma->vm_start + ((vmf->vma->last_fault_offset) << PAGE_SHIFT);
+	pgoff_t start = vmf->vma->window_start;
+	pgoff_t end = vmf->vma->window_end;
 	vma->last_fault_offset = vmf->pgoff - vmf->vma->vm_pgoff;
+	size_t swap_ahead = vma->swap_ahead_size;
+	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff, start, end, swap_ahead,folio, folio_ref_count(folio));
 	#endif
 
 	nr_pages = folio_nr_pages(folio);
@@ -4977,25 +5009,37 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		folio_put(folio);
 		return handle_userfault(vmf, VM_UFFD_MISSING);
 	}
-
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_1");
 	folio_ref_add(folio, nr_pages - 1);
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_2");
 	add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr_pages);
 	count_mthp_stat(folio_order(folio), MTHP_STAT_ANON_FAULT_ALLOC);
 	folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
 	folio_add_lru_vma(folio, vma);
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_3");
 setpte:
 	if (vmf_orig_pte_uffd_wp(vmf))
 		entry = pte_mkuffd_wp(entry);
 	set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr_pages);
-
+	if (folio)
+		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_4");
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr_pages);
+	if (folio)
+		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_5");
 unlock:
-	if (vmf->pte)
+	if (vmf->pte){
+		if (folio)
+			trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_6");
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
+	}
+	if (folio)
+		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_7");
 	return ret;
 release:
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_8");
 	folio_put(folio);
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_9");
 	goto unlock;
 oom:
 	return VM_FAULT_OOM;
@@ -5310,8 +5354,9 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 		ret = VM_FAULT_NOPAGE;
 		goto unlock;
 	}
-
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"finish_fault");
 	folio_ref_add(folio, nr_pages - 1);
+	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"finish_fault");
 	set_pte_range(vmf, folio, page, nr_pages, addr);
 	type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
 	add_mm_counter(vma->vm_mm, type, nr_pages);

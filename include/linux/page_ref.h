@@ -242,10 +242,13 @@ static inline bool page_ref_add_unless(struct page *page, int nr, int u)
 		__page_ref_mod_unless(page, nr, ret);
 	return ret;
 }
-
+void page_ref_trace_folio_ref_add_unless(struct folio *folio, int ref_count);
 static inline bool folio_ref_add_unless(struct folio *folio, int nr, int u)
 {
-	return page_ref_add_unless(&folio->page, nr, u);
+	page_ref_trace_folio_ref_add_unless(folio, folio_ref_count(folio));
+	bool res = page_ref_add_unless(&folio->page, nr, u);
+	page_ref_trace_folio_ref_add_unless(folio, folio_ref_count(folio));
+	return res;
 }
 
 /**

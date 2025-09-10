@@ -790,6 +790,10 @@ struct vm_area_struct {
 #endif
 #ifdef CONFIG_VMA_RECLAIM
 	pgoff_t last_fault_offset; // this is used to detect sequential faults
+	pgoff_t window_start;
+	pgoff_t window_end;
+	size_t swap_ahead_size; 
+	spinlock_t reclaim_lock; // protects reclaim fields 
 #endif
 } __randomize_layout;
 

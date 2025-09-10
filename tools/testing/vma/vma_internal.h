@@ -501,9 +501,12 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->si=NULL;
 	spin_lock_init(&vma->swap_lock);
 	#endif
-	#ifdefCONFIG_VMA_RECLAIM
+	#ifdef CONFIG_VMA_RECLAIM
 	vma->last_fault_offset = 0;
-	#endif
+	vma->windows_start = 0;
+	vma->windows_end = 0;
+	vma->swap_ahead_size = MIN_LRU_BATCH;
+	spin_lock_init(&vma->reclaim_lock);	#endif
 }
 
 static inline struct vm_area_struct *vm_area_alloc(struct mm_struct *mm)
@@ -538,6 +541,9 @@ static inline struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	#ifdef CONFIG_SWAP_VMA
 	new->si=NULL;
 	spin_lock_init(&new->swap_lock);
+	#endif
+	#ifdef CONFIG_VMA_RECLAIM
+	spin_lock_init(&vma->reclaim_lock);
 	#endif
 	return new;
 }

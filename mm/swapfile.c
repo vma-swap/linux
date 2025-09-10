@@ -1417,9 +1417,9 @@ static struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,stru
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_locked(folio, &rwc);
+		rmap_walk_anon_no_yield(folio, &rwc, true);
 	else
-		rmap_walk(folio, &rwc);
+		rmap_walk_anon_no_yield(folio, &rwc, false);
 
 	*folio_index = data.index;
 	if(!data.has_vma){

@@ -507,6 +507,9 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	new->si=NULL;
 	spin_lock_init(&new->swap_lock);
 	#endif
+	#ifdef CONFIG_VMA_RECLAIM
+	spin_lock_init(&new->reclaim_lock);
+	#endif
 	return new;
 }
 

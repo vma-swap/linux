@@ -561,24 +561,66 @@ TRACE_EVENT(commit_merge,
     #endif /* CONFIG_SWAP_VMA */
 );
 TRACE_EVENT(vma_fault, 
-    TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, unsigned long old_fadrr, int old_flag, int new_flag),
-    TP_ARGS(vma, faddr, old_fadrr, old_flag, new_flag),
+    TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, unsigned long old_fadrr, int new_flag, pgoff_t fault_off, pgoff_t window_start, pgoff_t window_end, size_t swap_ahead_size,struct folio* folio, int folio_ref_count),
+    TP_ARGS(vma, faddr, old_fadrr, new_flag, fault_off, window_start, window_end, swap_ahead_size, folio, folio_ref_count),
     TP_STRUCT__entry(
         __field(unsigned long, vma)
         __field(unsigned long, faddr)
         __field(unsigned long, old_fadrr)
-        __field(int, old_flag)
         __field(int, new_flag)
+        __field(pgoff_t, fault_off)
+        __field(pgoff_t, window_start)
+        __field(pgoff_t, window_end)
+        __field(size_t, swap_ahead_size)
+        __field(struct folio*, folio)
+        __field(int, folio_ref_count)
     ),
     TP_fast_assign(
         __entry->vma = (unsigned long)vma;
         __entry->faddr = faddr;
         __entry->old_fadrr = old_fadrr;
-        __entry->old_flag = old_flag;
         __entry->new_flag = new_flag;
+        __entry->fault_off = fault_off;
+        __entry->window_start = window_start;
+        __entry->window_end = window_end;
+        __entry->swap_ahead_size = swap_ahead_size;
+        __entry->folio = folio;
+        __entry->folio_ref_count = folio_ref_count;
     ),
-    TP_printk("vma=%lx faddr=%lx old_fadrr=%lx old_flag=%d new_flag=%d",
-        __entry->vma, __entry->faddr, __entry->old_fadrr, __entry->old_flag, __entry->new_flag)
+    TP_printk("vma=%lx faddr=%lx old_fadrr=%lx new_flag=%d fault_off=%ld window_start=%ld window_end=%ld swap_ahead_size=%zu folio=%p folio_ref_count=%d",
+        __entry->vma, __entry->faddr, __entry->old_fadrr, __entry->new_flag, __entry->fault_off, __entry->window_start, __entry->window_end, __entry->swap_ahead_size, __entry->folio, __entry->folio_ref_count)
+);
+TRACE_EVENT(add_to_swap,
+    TP_PROTO(struct folio *folio, unsigned long type, unsigned long offset, int ref_count),
+    TP_ARGS(folio, type, offset, ref_count),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)  
+        __field(unsigned long, type)
+        __field(unsigned long, offset)
+        __field(int, ref_count)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;     
+        __entry->type = type;
+        __entry->offset = offset;
+        __entry->ref_count = ref_count;
+    ),
+    TP_printk("folio=%p type=%lx offset=%lx ref_count=%d.",
+        __entry->folio, __entry->type, __entry->offset, __entry->ref_count)
+);
+TRACE_EVENT(add_to_swap_entry,
+    TP_PROTO(struct folio *folio, int ref_count),
+    TP_ARGS(folio, ref_count),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)  
+        __field(int, ref_count)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;     
+        __entry->ref_count = ref_count;
+    ),
+    TP_printk("folio=%p ref_count=%d.",
+        __entry->folio, __entry->ref_count)
 );
 #endif /* _TRACE_SWAP_H */
 

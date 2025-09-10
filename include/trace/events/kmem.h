@@ -409,6 +409,61 @@ TRACE_EVENT(rss_stat,
 		__print_symbolic(__entry->member, TRACE_MM_PAGES),
 		__entry->size)
 	);
+TRACE_EVENT(folio_get,
+
+	TP_PROTO(struct folio *folio, int ref_count),
+
+	TP_ARGS(folio, ref_count),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, ref_count)
+	),
+
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+	),
+
+	TP_printk("folio=%p ref_count=%d",
+		  __entry->folio, __entry->ref_count)
+);
+TRACE_EVENT(folio_put,
+	TP_PROTO(struct folio *folio, int ref_count),
+
+	TP_ARGS(folio, ref_count),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, ref_count)
+	),
+
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+	),
+
+	TP_printk("folio=%p ref_count=%d",
+		  __entry->folio, __entry->ref_count)
+);
+TRACE_EVENT(folio_ref_add_unless,
+	TP_PROTO(struct folio *folio, int ref_count),
+
+	TP_ARGS(folio, ref_count),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, ref_count)
+	),
+
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+	),
+
+	TP_printk("folio=%p ref_count=%d",
+		  __entry->folio, __entry->ref_count)
+);
 #endif /* _TRACE_KMEM_H */
 
 /* This part must be outside protection */

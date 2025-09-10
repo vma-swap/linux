@@ -537,15 +537,20 @@ TRACE_EVENT(mm_vmscan_throttled,
 );
 TRACE_EVENT(mm_vmscan_isolate_folio,
 
-	TP_PROTO(struct folio *folio),
-	TP_ARGS(folio),
+	TP_PROTO(struct folio *folio, int ref_count),
+	TP_ARGS(folio, ref_count),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
+		    __field(int, ref_count)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
+		__entry->ref_count = ref_count;
 	),
-	TP_printk("folio=%p", __entry->folio)
+	TP_printk("folio=%p ref_count=%d",
+		__entry->folio,
+		__entry->ref_count
+	)
 );
 #ifdef CONFIG_VMA_RECLAIM
 TRACE_EVENT(mm_vmscan_scan_folios,
@@ -632,8 +637,8 @@ TRACE_EVENT(mm_vmscan_get_first_folio_in_seq,
 );
 TRACE_EVENT(mm_vmscan_follow_address,
 	TP_PROTO(struct vm_area_struct *vma, unsigned long addr, unsigned long pgd_val, 
-			unsigned long p4d_val, unsigned long pud_val, unsigned long pmd_val, unsigned long pte_val, unsigned long pfn, struct folio *folio),
-	TP_ARGS(vma, addr, pgd_val, p4d_val, pud_val, pmd_val, pte_val, pfn, folio),
+			unsigned long p4d_val, unsigned long pud_val, unsigned long pmd_val, unsigned long pte_val, unsigned long pfn, struct folio *folio, int ref_count),
+	TP_ARGS(vma, addr, pgd_val, p4d_val, pud_val, pmd_val, pte_val, pfn, folio, ref_count),
 	TP_STRUCT__entry(
 		    __field(struct vm_area_struct *, vma)
 		    __field(unsigned long, addr)
@@ -644,6 +649,7 @@ TRACE_EVENT(mm_vmscan_follow_address,
 		    __field(unsigned long, pte_val)
 		    __field(unsigned long, pfn)
 		    __field(struct folio *, folio)
+			__field(int, ref_count)
 	),	
 	TP_fast_assign(
 		__entry->vma = vma;
@@ -655,8 +661,9 @@ TRACE_EVENT(mm_vmscan_follow_address,
 		__entry->pte_val = pte_val;
 		__entry->pfn = pfn;
 		__entry->folio = folio;
+		__entry->ref_count = ref_count;
 	),
-	TP_printk("vma=%p addr=0x%lx pgd_val=0x%lx p4d_val=0x%lx pud_val=0x%lx pmd_val=0x%lx pte_val=0x%lx pfn=0x%lx folio=%p order=%d",
+	TP_printk("vma=%p addr=0x%lx pgd_val=0x%lx p4d_val=0x%lx pud_val=0x%lx pmd_val=0x%lx pte_val=0x%lx pfn=0x%lx folio=%p order=%d ref_count=%d",
 		__entry->vma,
 		__entry->addr,
 		__entry->pgd_val,
@@ -666,7 +673,8 @@ TRACE_EVENT(mm_vmscan_follow_address,
 		__entry->pte_val,
 		__entry->pfn,
 		__entry->folio,
-		__entry->folio ? folio_order(__entry->folio) : -1)
+		__entry->folio ? folio_order(__entry->folio) : -1,
+		__entry->ref_count)
 
 );
 TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
@@ -729,6 +737,117 @@ TRACE_EVENT(mm_vmscan_reclaim_page,
 		__entry->node_id,
 		__entry->memcg_id)
 );
+TRACE_EVENT(mm_vmscan_get_vma_for_folio,
+	TP_PROTO(struct folio *folio, struct vm_area_struct *vma, pgoff_t window_start, pgoff_t window_end),
+	TP_ARGS(folio, vma, window_start, window_end),
+	TP_STRUCT__entry(
+			__field(struct folio *, folio)
+			__field(struct vm_area_struct *, vma)
+			__field(pgoff_t, window_start)
+			__field(pgoff_t, window_end)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->vma = vma;
+	  	__entry->window_start = window_start;
+		__entry->window_end = window_end
+	)
+	,
+	TP_printk("folio=%p vma=%p window_start=%llu window_end=%llu",
+		__entry->folio,
+		__entry->vma,
+	  	(unsigned long long)__entry->window_start,
+		(unsigned long long)__entry->window_end)
+);
+TRACE_EVENT(mm_vmscan_shrink_folio_list,
+	TP_PROTO(struct folio *folio, int keep_locked, char* reason),
+	TP_ARGS(folio, keep_locked, reason),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, keep_locked)
+		    __string(reason, reason)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->keep_locked = keep_locked;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p keep_locked=%d reason=%s",
+		__entry->folio,
+		__entry->keep_locked,
+		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_pageout,
+
+	TP_PROTO(struct folio *folio, int action, const char *reason),
+
+	TP_ARGS(folio, action, reason),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, action)
+		__string(reason, reason)
+	),
+		TP_fast_assign(
+		__entry->folio = folio;
+		__entry->action = action;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p action=%d reason=%s",
+		__entry->folio,
+		__entry->action,
+		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_is_page_cache_freeable,
+
+	TP_PROTO(struct folio *folio, int ref_count, int is_private, int is_private_2, int nr_pages, struct vm_area_struct *vma),
+
+	TP_ARGS(folio, ref_count, is_private, is_private_2, nr_pages, vma),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, ref_count)
+		__field(int, is_private)
+		__field(int, is_private_2)
+		__field(int, nr_pages)
+		__field(struct vm_area_struct *, vma)
+	),
+
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+		__entry->is_private = is_private;
+		__entry->is_private_2 = is_private_2;
+		__entry->nr_pages = nr_pages;
+		__entry->vma = vma;
+	),
+
+	TP_printk("folio=%p ref_count=%d is_private=%d is_private_2=%d nr_pages=%d vma=%p",
+		  __entry->folio,
+		  __entry->ref_count,
+		  __entry->is_private,
+		  __entry->is_private_2,
+		  __entry->nr_pages,
+		  __entry->vma)
+);
+TRACE_EVENT(mm_vmscan_folio_refs,
+	TP_PROTO(struct folio *folio, int refs, char* reason),
+	TP_ARGS(folio, refs, reason),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, refs)
+			__string(reason, reason)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->refs = refs;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p refs=%d reason=%s",
+		__entry->folio,
+		__entry->refs,
+		__get_str(reason))
+);
+
 #endif
 #endif /* _TRACE_VMSCAN_H */
 
