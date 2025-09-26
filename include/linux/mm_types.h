@@ -793,6 +793,7 @@ struct vm_area_struct {
 	pgoff_t window_start;
 	pgoff_t window_end;
 	size_t swap_ahead_size; 
+	struct vm_area_struct *next_vma;
 	spinlock_t reclaim_lock; // protects reclaim fields 
 #endif
 } __randomize_layout;

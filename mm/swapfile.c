@@ -93,6 +93,7 @@ bool swap_migration_ad_supported;
 
 #ifdef CONFIG_SWAP_VMA
 unsigned int swap_ra_granularity = 32; /* 32 pages */
+unsigned int min_swap_ra_granularity = 32; /* 32 pages */
 #endif
 
 static const char Bad_file[] = "Bad swap file entry ";

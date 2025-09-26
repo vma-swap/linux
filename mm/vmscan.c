@@ -184,6 +184,8 @@ struct scan_control {
 	struct reclaim_state reclaim_state;
 	#ifdef CONFIG_VMA_RECLAIM
 	unsigned int vma_reclamation;
+	unsigned int len_vmas;
+	struct vm_area_struct *vmas;
 	#endif
 };
 
@@ -207,6 +209,7 @@ struct scan_control {
 int vm_swappiness = 60;
 #ifdef CONFIG_VMA_RECLAIM
 unsigned int max_swap_around = 4194304; // 16 MiB
+unsigned int min_swap_around = 64;
 #endif
 
 
@@ -3331,6 +3334,72 @@ static bool get_next_vma(unsigned long mask, unsigned long size, struct mm_walk 
 	return false;
 }
 #ifdef CONFIG_VMA_RECLAIM
+//must be called with vma->reclaim_lock held
+static bool is_single_io_stream(struct vm_area_struct *vma){
+	unsigned int threshold = min(vma->swap_ahead_size / 2, min_swap_around);
+	spin_lock(&vma->swap_lock);
+	bool ret_val = (!vma->si) || (get_seq_hits(vma->si->bdev) > threshold);
+	spin_unlock(&vma->swap_lock);
+	return ret_val;
+}
+static void update_vma_reclaim_size(struct scan_control *sc)
+{
+	struct vm_area_struct *vma = sc->vmas;
+	while(vma)
+	{
+		unsigned long flags;
+		spin_lock_irqsave(&vma->reclaim_lock, flags);
+		if(!is_single_io_stream(vma))
+			vma->swap_ahead_size = min(vma->swap_ahead_size * 2, max_swap_around);
+		else
+			vma->swap_ahead_size = min_swap_around;
+		unsigned int new_size = vma->swap_ahead_size;
+		spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+		trace_mm_vmscan_update_vma_reclaim_size(vma, new_size);
+	}
+}
+static void add_to_seq_vma(struct scan_control *sc, struct vm_area_struct *vma_to_add)
+{	struct vm_area_struct *vma = sc->vmas;
+	while(vma)
+	{
+		if(vma == vma_to_add)
+			return;
+		vma = vma->next_vma;
+	}
+	unsigned long flags;
+	spin_lock_irqsave(&vma_to_add->reclaim_lock, flags);
+	vma_to_add->next_vma = sc->vmas;
+	spin_unlock_irqrestore(&vma_to_add->reclaim_lock, flags);
+	sc->vmas = vma_to_add;
+}
+static void remove_from_seq_vma(struct scan_control *sc, struct vm_area_struct *vma_to_remove)
+{
+	struct vm_area_struct *vma = sc->vmas;
+	struct vm_area_struct *prev = NULL;
+	while(vma)
+	{
+		if(vma == vma_to_remove)
+		{
+			// bug if prev == vma
+			BUG_ON(prev == vma);
+			unsigned long flags1;
+			spin_lock_irqsave(&vma->reclaim_lock, flags1);
+			if(prev){
+				unsigned long flags2;
+				spin_lock_irqsave(&prev->reclaim_lock, flags2);
+				prev->next_vma = vma->next_vma;
+				spin_unlock_irqrestore(&prev->reclaim_lock, flags2);
+			}
+			else
+				sc->vmas = vma->next_vma;
+			vma->next_vma = NULL;
+			spin_unlock_irqrestore(&vma->reclaim_lock, flags1);
+			return;
+		}
+		prev = vma;
+		vma = vma->next_vma;
+	}
+}
 static unsigned long get_pte_pfn_vma(pte_t pte, struct vm_area_struct *vma, unsigned long addr,
 				 struct pglist_data *pgdat)
 {
@@ -3841,7 +3910,7 @@ static bool get_next_folio(struct folio *folio, struct vm_area_struct *vma,
 	if (next_addr >= vma->vm_end)
 		return true; // continue walking
 	struct folio *next_folio = follow_address(vma, next_addr, folio_memcg(folio), folio_pgdat(folio));
-	trace_mm_vmscan_get_next_folio(next_folio, next_addr, vma);
+	trace_mm_vmscan_get_next_folio(next_folio, next_addr, vma, folio_test_anon(folio), folio_is_file_lru(folio), folio->mapping != NULL);
 	data->next_folio = next_folio;
 	data->next_addr = next_addr;
 	data->vma = vma;
@@ -3863,7 +3932,7 @@ static bool get_prev_folio(struct folio *folio, struct vm_area_struct *vma,
 		return true; // continue walking
 	}
 	struct folio *prev_folio = follow_address(vma, prev_addr, folio_memcg(folio), folio_pgdat(folio));
-	trace_mm_vmscan_get_prev_folio(prev_folio, prev_addr, vma);
+	trace_mm_vmscan_get_prev_folio(prev_folio, prev_addr, vma, folio_test_anon(folio), folio_is_file_lru(folio), folio->mapping != NULL);
 	data->prev_folio = prev_folio;
 	data->prev_addr = prev_addr;
 	data->vma = vma;
@@ -3891,9 +3960,19 @@ static struct folio* get_next_folio_for_folio(struct folio* cur_folio){
 		.done = NULL,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
-	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(cur_folio), cur_folio);
-	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
-	trace_mm_vmscan_get_next_folio_for_folio(cur_folio, data.next_folio, data.next_addr, data.vma);
+	if (folio_test_anon(cur_folio)) {
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+		if (data.next_folio && !folio_test_anon(data.next_folio)) {
+			data.next_folio = NULL;
+		}
+	}
+	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
+		if (data.next_folio && (!folio_is_file_lru(data.next_folio) || !data.next_folio->mapping)) {
+			data.next_folio = NULL;
+		}
+	}
+	trace_mm_vmscan_get_next_folio_for_folio(cur_folio, data.next_folio, data.next_addr, data.vma, folio_test_anon(cur_folio), folio_is_file_lru(cur_folio), cur_folio->mapping != NULL);
 	return data.next_folio;
 }
 
@@ -3907,9 +3986,19 @@ static struct folio* get_prev_folio_for_folio(struct folio* cur_folio){
 		.done = NULL,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
-	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(cur_folio), cur_folio);
-	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
-	trace_mm_vmscan_get_prev_folio_for_folio(cur_folio, data.prev_folio, data.prev_addr, data.vma);
+	if (folio_test_anon(cur_folio)) {
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+		if (data.prev_folio && !folio_test_anon(data.prev_folio)) {
+			data.prev_folio = NULL;
+		}
+	}
+	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
+		if (data.prev_folio && (!folio_is_file_lru(data.prev_folio) || !data.prev_folio->mapping)) {
+			data.prev_folio = NULL;
+		}
+	}
+	trace_mm_vmscan_get_prev_folio_for_folio(cur_folio, data.prev_folio, data.prev_addr, data.vma, folio_test_anon(cur_folio), folio_is_file_lru(cur_folio), cur_folio->mapping != NULL);
 	return data.prev_folio;
 }
 
@@ -3923,31 +4012,34 @@ struct vm_area_struct* get_vma_for_folio(struct folio* cur_folio){
 		.done = NULL,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
-	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(cur_folio), cur_folio);
-	rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+	if (folio_test_anon(cur_folio))
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) 
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
 	pgoff_t window_start = 0;
 	pgoff_t window_end = 0;
+	size_t swap_ahead_size = 0;
 	if (data.vma){
-		spin_lock(&data.vma->reclaim_lock);
+		unsigned long flags;
+		spin_lock_irqsave(&data.vma->reclaim_lock, flags);
 		window_start = data.vma->window_start;
 		window_end = data.vma->window_end;
-		spin_unlock(&data.vma->reclaim_lock);
+		swap_ahead_size = data.vma->swap_ahead_size;
+		spin_unlock_irqrestore(&data.vma->reclaim_lock, flags);
 	}
 
-	trace_mm_vmscan_get_vma_for_folio(cur_folio, data.vma, window_start, window_end);
+	trace_mm_vmscan_get_vma_for_folio(cur_folio, data.vma, window_start, window_end, swap_ahead_size, folio_test_anon(cur_folio), folio_is_file_lru(cur_folio), cur_folio->mapping != NULL);
 	return data.vma;
 }
 
 static struct folio* get_first_folio_in_seq(struct folio* cur_folio){
 	struct folio* first = cur_folio;
-	VM_BUG_ON_FOLIO(!folio_test_anon(cur_folio), cur_folio);
 	if(!cur_folio){
 		printk(KERN_ERR "get_first_folio_in_seq: cur_folio is NULL\n");
 		return NULL;
 	}
 	struct folio *prev = cur_folio;
 	while((prev = get_prev_folio_for_folio(first)) != NULL && folio_test_seq(prev)){
-		VM_BUG_ON_FOLIO(!folio_test_anon(prev), cur_folio);
 		first = prev;
 	}
 	trace_mm_vmscan_get_first_folio_in_seq(first);
@@ -4715,7 +4807,7 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 				else if (check_isolate_folio(lruvec, folio, sc)) {
 					trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"scan_folios");
 					struct vm_area_struct *tmp_vma = get_vma_for_folio(folio);
-					if (tmp_vma && tmp_vma != vma &&max_swap_around){
+					if (tmp_vma && tmp_vma != vma && max_swap_around){
 						vma = tmp_vma;
 						sc->vma_reclamation = true;
 					}
@@ -4754,7 +4846,6 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 						while(evictable_folio && seq_hits < vma->swap_ahead_size){
 							trace_mm_vmscan_folio_refs(evictable_folio, folio_ref_count(evictable_folio),"scan_folios");
 							if(!evictable_folio ||
-								folio_is_file_lru(evictable_folio) ||
 								!folio_test_lru(evictable_folio) ||
 								!folio_test_seq(evictable_folio) ||
 								!folio_evictable(evictable_folio)
@@ -4818,18 +4909,16 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 							vma->window_end = 0;
 							vma->swap_ahead_size = MIN_LRU_BATCH;
 							spin_unlock_irqrestore(&vma->reclaim_lock, flags);
-
 							sc->vma_reclamation = false;
+							remove_from_seq_vma(sc, vma);
 							if (!is_evicted){
 								isolate_folio(lruvec, folio, sc);
 								list_add(&folio->lru, list);
 								isolated += delta;
 							}
 						}
-						else{
-							// enlarge swap ahead size
-							vma->swap_ahead_size = min(vma->swap_ahead_size * 2, max_swap_around);
-						}
+						else
+							add_to_seq_vma(sc, vma);
 					}
 					else {
 						isolate_folio(lruvec, folio, sc);
@@ -7014,6 +7103,10 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 		.may_unmap = 1,
 		.may_swap = !!(reclaim_options & MEMCG_RECLAIM_MAY_SWAP),
 		.proactive = !!(reclaim_options & MEMCG_RECLAIM_PROACTIVE),
+		#ifdef CONFIG_VMA_RECLAIM
+		.vmas = NULL,
+		.len_vmas = 0,
+		#endif
 	};
 	/*
 	 * Traverse the ZONELIST_FALLBACK zonelist of the current node to put
@@ -7027,6 +7120,9 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 	noreclaim_flag = memalloc_noreclaim_save();
 
 	nr_reclaimed = do_try_to_free_pages(zonelist, &sc);
+	#ifdef CONFIG_VMA_RECLAIM
+	update_vma_reclaim_size(&sc);
+	#endif
 
 	memalloc_noreclaim_restore(noreclaim_flag);
 	trace_mm_vmscan_memcg_reclaim_end(nr_reclaimed);

@@ -441,6 +441,7 @@ extern unsigned long shrink_all_memory(unsigned long nr_pages);
 extern int vm_swappiness;
 #ifdef CONFIG_VMA_RECLAIM
 extern unsigned int max_swap_around;
+extern unsigned int min_swap_around;
 #endif
 long remove_mapping(struct address_space *mapping, struct folio *folio);
 

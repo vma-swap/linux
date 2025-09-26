@@ -589,40 +589,58 @@ TRACE_EVENT(mm_vmscan_scan_folios,
 	)
 );
 TRACE_EVENT(mm_vmscan_get_next_folio,
-	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
-	TP_ARGS(folio, addr, vma),
+	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(folio, addr, vma, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
 		    __field(unsigned long, addr)
 		    __field(struct vm_area_struct *, vma)
+			__field(int, is_anon)
+			__field(int, is_file)
+			__field(int, has_mapping)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
 		__entry->addr = addr;
 		__entry->vma = vma;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+		__entry->has_mapping = has_mapping;
 	),
-	TP_printk("folio=%p addr=0x%lx vma=%p",
+	TP_printk("folio=%p addr=0x%lx vma=%p is_anon=%d is_file=%d has_mapping=%d",
 		__entry->folio,
 		__entry->addr,
-		__entry->vma)
+		__entry->vma,
+		__entry->is_anon,
+		__entry->is_file,
+		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_get_prev_folio,
-	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma),
-	TP_ARGS(folio, addr, vma),
+	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(folio, addr, vma, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
 		    __field(unsigned long, addr)
 		    __field(struct vm_area_struct *, vma)
+			__field(int, is_anon)
+			__field(int, is_file)
+			__field(int, has_mapping)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
 		__entry->addr = addr;
 		__entry->vma = vma;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+		__entry->has_mapping = has_mapping;
 	),
-	TP_printk("folio=%p addr=0x%lx vma=%p",
+	TP_printk("folio=%p addr=0x%lx vma=%p is_anon=%d is_file=%d has_mapping=%d",
 		__entry->folio,
 		__entry->addr,
-		__entry->vma)
+		__entry->vma,
+		__entry->is_anon,
+		__entry->is_file,
+		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_get_first_folio_in_seq,
 	TP_PROTO(struct folio *folio),
@@ -678,46 +696,64 @@ TRACE_EVENT(mm_vmscan_follow_address,
 
 );
 TRACE_EVENT(mm_vmscan_get_next_folio_for_folio,
-	TP_PROTO(struct folio *cur_folio, struct folio *next_folio, unsigned long addr, struct vm_area_struct *vma),
-	TP_ARGS(cur_folio, next_folio, addr, vma),
+	TP_PROTO(struct folio *cur_folio, struct folio *next_folio, unsigned long addr, struct vm_area_struct *vma, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(cur_folio, next_folio, addr, vma, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 		    __field(struct folio *, cur_folio)
 		    __field(struct folio *, next_folio)
 		    __field(unsigned long, addr)
 		    __field(struct vm_area_struct *, vma)
+			__field(int, is_anon)
+			__field(int, is_file)
+			__field(int, has_mapping)
 	),
 	TP_fast_assign(
 		__entry->cur_folio = cur_folio;
 		__entry->next_folio = next_folio;
 		__entry->addr = addr;
 		__entry->vma = vma;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+
 	),
-	TP_printk("cur_folio=%p next_folio=%p next_addr=0x%lx vma=%p",
+	TP_printk("cur_folio=%p next_folio=%p next_addr=0x%lx vma=%p is_anon=%d is_file=%d has_mapping=%d",
 		__entry->cur_folio,
 		__entry->next_folio,
 		__entry->addr,
-		__entry->vma)
+		__entry->vma,
+		__entry->is_anon,
+		__entry->is_file,
+		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_get_prev_folio_for_folio,
-	TP_PROTO(struct folio *cur_folio, struct folio *prev_folio, unsigned long addr, struct vm_area_struct *vma),
-	TP_ARGS(cur_folio, prev_folio, addr, vma),
+	TP_PROTO(struct folio *cur_folio, struct folio *prev_folio, unsigned long addr, struct vm_area_struct *vma, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(cur_folio, prev_folio, addr, vma, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 		    __field(struct folio *, cur_folio)
 		    __field(struct folio *, prev_folio)
 		    __field(unsigned long, addr)
 		    __field(struct vm_area_struct *, vma)
+			__field(int, is_anon)
+			__field(int, is_file)
+			__field(int, has_mapping)
 	),
 	TP_fast_assign(
 		__entry->cur_folio = cur_folio;
 		__entry->prev_folio = prev_folio;
 		__entry->addr = addr;
 		__entry->vma = vma;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+		__entry->has_mapping = has_mapping;
 	),
-	TP_printk("cur_folio=%p prev_folio=%p prev_addr=0x%lx vma=%p",
+	TP_printk("cur_folio=%p prev_folio=%p prev_addr=0x%lx vma=%p is_anon=%d is_file=%d has_mapping=%d",
 		__entry->cur_folio,
 		__entry->prev_folio,
 		__entry->addr,
-		__entry->vma)
+		__entry->vma,
+		__entry->is_anon,
+		__entry->is_file,
+		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_reclaim_page,
 	TP_PROTO(struct folio *folio, int node_id, int memcg_id),
@@ -738,26 +774,39 @@ TRACE_EVENT(mm_vmscan_reclaim_page,
 		__entry->memcg_id)
 );
 TRACE_EVENT(mm_vmscan_get_vma_for_folio,
-	TP_PROTO(struct folio *folio, struct vm_area_struct *vma, pgoff_t window_start, pgoff_t window_end),
-	TP_ARGS(folio, vma, window_start, window_end),
+	TP_PROTO(struct folio *folio, struct vm_area_struct *vma, pgoff_t window_start, pgoff_t window_end,size_t swap_ahead_size, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(folio, vma, window_start, window_end,swap_ahead_size, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 			__field(struct folio *, folio)
 			__field(struct vm_area_struct *, vma)
 			__field(pgoff_t, window_start)
 			__field(pgoff_t, window_end)
+			__field(size_t, swap_ahead_size)
+			__field(int, is_anon)
+			__field(int, is_file)
+			__field(int, has_mapping)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
 		__entry->vma = vma;
 	  	__entry->window_start = window_start;
-		__entry->window_end = window_end
+		__entry->window_end = window_end;
+		__entry->swap_ahead_size = swap_ahead_size;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+		__entry->has_mapping = has_mapping;
 	)
 	,
-	TP_printk("folio=%p vma=%p window_start=%llu window_end=%llu",
+	TP_printk("folio=%p vma=%p window_start=%llu window_end=%llu swap_ahead_size=%ld is_anon=%d is_file=%d has_mapping=%d",
 		__entry->folio,
 		__entry->vma,
 	  	(unsigned long long)__entry->window_start,
-		(unsigned long long)__entry->window_end)
+		(unsigned long long)__entry->window_end,
+		__entry->swap_ahead_size,
+		__entry->is_anon,
+		__entry->is_file,
+		__entry->has_mapping
+	)
 );
 TRACE_EVENT(mm_vmscan_shrink_folio_list,
 	TP_PROTO(struct folio *folio, int keep_locked, char* reason),
@@ -846,6 +895,21 @@ TRACE_EVENT(mm_vmscan_folio_refs,
 		__entry->folio,
 		__entry->refs,
 		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_update_vma_reclaim_size,
+	TP_PROTO(struct vm_area_struct *vma, unsigned int new_size),
+	TP_ARGS(vma, new_size),
+	TP_STRUCT__entry(
+		    __field(struct vm_area_struct *, vma)
+		    __field(unsigned int, new_size)
+	),
+	TP_fast_assign(
+		__entry->vma = vma;
+		__entry->new_size = new_size;
+	),
+	TP_printk("vma=%p new_size=%u",
+		__entry->vma,
+		__entry->new_size)
 );
 
 #endif

@@ -2081,6 +2081,15 @@ static const struct ctl_table vm_table[] = {
 		.extra1	= SYSCTL_ZERO,
 		.extra2	= SYSCTL_INT_MAX,
 	},
+	{
+		.procname	= "bdev_single_stream_min_threshold",
+		.data 	= &bdev_single_stream_min_threshold,
+		.maxlen	= sizeof(bdev_single_stream_min_threshold),
+		.mode	= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1	= SYSCTL_ZERO,
+		.extra2	= SYSCTL_INT_MAX,
+	},
 	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	{

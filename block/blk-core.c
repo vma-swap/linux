@@ -113,6 +113,12 @@ static const char *const blk_op_name[] = {
 };
 #undef REQ_OP_NAME
 
+#ifdef CONFIG_SWAP_VMA
+size_t bdev_single_stream_min_threshold = 96; // one swap out of 64 and one swap in of 32
+size_t count_as_seq_window = 16; // allow up to 16 sectors to be counted as sequential
+void log_io(struct bio *);
+#endif
+
 /**
  * blk_op_str - Return string XXX in the REQ_OP_XXX.
  * @op: REQ_OP_XXX.
@@ -882,7 +888,37 @@ static void bio_set_ioprio(struct bio *bio)
 		bio->bi_ioprio = get_current_ioprio();
 	blkcg_set_ioprio(bio);
 }
+#ifdef CONFIG_SWAP_VMA
+void log_io(struct bio *bio)
+{
+	struct block_device *bdev = bio->bi_bdev;
+	sector_t sector = bio->bi_iter.bi_sector;
+	unsigned long flags;
+	spin_lock_irqsave(&bdev->swap_lock, flags);
+	sector_t last = bdev->last_bdev_io;
+	unsigned int last_io_size_in_sectors = bdev->last_bdev_io_size_in_sectors;
+	if (last + last_io_size_in_sectors <= sector && last + last_io_size_in_sectors + count_as_seq_window >= sector)
+		bdev->seq_hits += bio_sectors(bio)/8;
+	else
+		bdev->seq_hits = 0;
+	bdev->last_bdev_io = sector;
+	bdev->last_bdev_io_size_in_sectors = bio_sectors(bio);
+	size_t hits = bdev->seq_hits;
+	spin_unlock_irqrestore(&bdev->swap_lock, flags);
+	trace_block_log_io(bdev, last, sector, bio->bi_iter.bi_size, hits);
+}
 
+size_t get_seq_hits(struct block_device *bdev)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&bdev->swap_lock, flags);
+	size_t hits = bdev->seq_hits;
+	spin_unlock_irqrestore(&bdev->swap_lock, flags);
+	trace_block_get_seq_hits(bdev, hits);
+	return hits;
+}
+
+#endif
 /**
  * submit_bio - submit a bio to the block device layer for I/O
  * @bio: The &struct bio which describes the I/O
@@ -904,7 +940,9 @@ void submit_bio(struct bio *bio)
 	} else if (bio_op(bio) == REQ_OP_WRITE) {
 		count_vm_events(PGPGOUT, bio_sectors(bio));
 	}
-
+	#ifdef CONFIG_SWAP_VMA
+	log_io(bio);
+	#endif
 	bio_set_ioprio(bio);
 	submit_bio_noacct(bio);
 }

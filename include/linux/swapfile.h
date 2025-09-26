@@ -11,5 +11,6 @@ extern unsigned long swapfile_maximum_size;
 extern bool swap_migration_ad_supported;
 #ifdef CONFIG_SWAP_VMA
 extern unsigned int swap_ra_granularity;
+extern unsigned int min_swap_ra_granularity;
 #endif
 #endif /* _LINUX_SWAPFILE_H */

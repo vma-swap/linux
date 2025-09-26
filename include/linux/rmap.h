@@ -778,6 +778,7 @@ struct rmap_walk_control {
 
 void rmap_walk(struct folio *folio, struct rmap_walk_control *rwc);
 void rmap_walk_anon_no_yield(struct folio *folio, struct rmap_walk_control *rwc, bool locked);
+void rmap_walk_file_no_yield(struct folio *folio, struct rmap_walk_control *rwc, bool locked);
 void rmap_walk_locked(struct folio *folio, struct rmap_walk_control *rwc);
 struct anon_vma *folio_lock_anon_vma_read(const struct folio *folio,
 					  struct rmap_walk_control *rwc);

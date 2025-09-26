@@ -52,6 +52,7 @@
 #include <asm/tlbflush.h>
 #include "internal.h"
 
+#include <trace/events/swap.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
 
@@ -3557,6 +3558,28 @@ retry_find:
 	}
 
 	vmf->page = folio_file_page(folio, index);
+	#ifdef CONFIG_VMA_RECLAIM
+	unsigned long flags;
+	struct vm_area_struct *vma = vmf->vma;
+	spin_lock_irqsave(&vma->reclaim_lock, flags);
+	if (vmf->pgoff - vma->vm_pgoff == vma->last_fault_offset + 1 || vmf->pgoff - vma->vm_pgoff == 0)
+		folio_set_seq(folio);
+	else
+		folio_clear_seq(folio);
+	if (vmf->pgoff - vma->vm_pgoff >= vma->window_start && vmf->pgoff - vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
+		// fault outside window, reset window
+		vma->window_start = 0;
+		vma->window_end = 0;
+		vma->swap_ahead_size = MIN_LRU_BATCH;
+	}
+	unsigned long old_addr = vma->vm_start + ((vma->last_fault_offset) << PAGE_SHIFT);
+	pgoff_t start = vma->window_start;
+	pgoff_t end = vma->window_end;
+	vma->last_fault_offset = vmf->pgoff - vma->vm_pgoff;
+	size_t swap_ahead = vma->swap_ahead_size;
+	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+	trace_vma_fault(vma, vma->vm_start + ((vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vma->vm_pgoff, start, end, swap_ahead, folio,folio_ref_count(folio));
+	#endif
 	return ret | VM_FAULT_LOCKED;
 
 page_not_uptodate:

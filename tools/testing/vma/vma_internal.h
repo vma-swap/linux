@@ -506,6 +506,7 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->windows_start = 0;
 	vma->windows_end = 0;
 	vma->swap_ahead_size = MIN_LRU_BATCH;
+	vma->next_vma = NULL;
 	spin_lock_init(&vma->reclaim_lock);	#endif
 }
 

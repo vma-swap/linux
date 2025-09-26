@@ -762,6 +762,14 @@ void exit_swap_address_space(unsigned int type)
 	swapper_spaces[type] = NULL;
 }
 
+static bool is_single_io_stream(struct vm_area_struct *vma, unsigned long prev_win){
+	unsigned long flags;
+	spin_lock_irqsave(&vma->reclaim_lock, flags);
+	bool ret_val = vma && vma->si && get_seq_hits(vma->si->bdev) > prev_win;
+	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+	return ret_val;
+}
+
 static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 			   unsigned long *end)
 {
@@ -770,7 +778,10 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	unsigned long faddr, prev_faddr, left, right;
 	unsigned int max_win, hits, prev_win, win;
 	#ifdef CONFIG_SWAP_VMA
-	max_win = READ_ONCE(swap_ra_granularity);
+	if (!is_single_io_stream(vma, SWAP_RA_WIN(GET_SWAP_RA_VAL(vma))))
+		max_win = READ_ONCE(swap_ra_granularity);
+	else
+		max_win = READ_ONCE(min_swap_ra_granularity);
 	#else
 	max_win = 1 << min(READ_ONCE(page_cluster), SWAP_RA_ORDER_CEILING);
 	#endif
