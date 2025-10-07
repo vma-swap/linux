@@ -897,19 +897,40 @@ TRACE_EVENT(mm_vmscan_folio_refs,
 		__get_str(reason))
 );
 TRACE_EVENT(mm_vmscan_update_vma_reclaim_size,
-	TP_PROTO(struct vm_area_struct *vma, unsigned int new_size),
-	TP_ARGS(vma, new_size),
+	TP_PROTO(struct vm_area_struct *vma, unsigned int new_size, size_t vma_seq_hits),
+	TP_ARGS(vma, new_size, vma_seq_hits),
 	TP_STRUCT__entry(
 		    __field(struct vm_area_struct *, vma)
 		    __field(unsigned int, new_size)
+			__field(size_t, vma_seq_hits)
 	),
 	TP_fast_assign(
 		__entry->vma = vma;
 		__entry->new_size = new_size;
+		__entry->vma_seq_hits = vma_seq_hits;
 	),
-	TP_printk("vma=%p new_size=%u",
+	TP_printk("vma=%p new_size=%u vma_seq_hits=%ld",
 		__entry->vma,
-		__entry->new_size)
+		__entry->new_size,
+		__entry->vma_seq_hits)
+);
+TRACE_EVENT(mm_vmscan_sort_folio,
+	TP_PROTO(struct folio *folio, unsigned int ref, char* reason),
+	TP_ARGS(folio, ref, reason),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+			__field(unsigned int, ref)
+			__string(reason, reason)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref = ref;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p ref=%u reason=%s",
+		__entry->folio,
+		__entry->ref,
+		__get_str(reason))
 );
 
 #endif

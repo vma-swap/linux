@@ -673,10 +673,11 @@ static int commit_merge(struct vma_merge_struct *vmg,
 		}
 	}
 	#ifdef CONFIG_SWAP_VMA
-	spin_lock(&vmg->vma->swap_lock);
+	unsigned long flags;
+	spin_lock_irqsave(&vmg->vma->swap_lock,flags);
 	vmg->vma->si = NULL;
+	spin_unlock_irqrestore(&vmg->vma->swap_lock,flags);
 	trace_commit_merge(vmg);
-	spin_unlock(&vmg->vma->swap_lock);
 	#endif
 	vma_complete(&vp, vmg->vmi, vmg->vma->vm_mm);
 

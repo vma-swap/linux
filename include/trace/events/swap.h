@@ -622,6 +622,22 @@ TRACE_EVENT(add_to_swap_entry,
     TP_printk("folio=%p ref_count=%d.",
         __entry->folio, __entry->ref_count)
 );
+TRACE_EVENT(vma_fault_early_return,
+    TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, char* reason),
+    TP_ARGS(vma, faddr, reason),
+    TP_STRUCT__entry(
+        __field(unsigned long, vma)
+        __field(unsigned long, faddr)
+        __string(reason, reason)
+    ),
+    TP_fast_assign(
+        __entry->vma = (unsigned long)vma;
+        __entry->faddr = faddr;
+        __assign_str(reason);
+    ),
+    TP_printk("vma=%lx faddr=%lx reason=%s",
+        __entry->vma, __entry->faddr, __get_str(reason))
+);
 #endif /* _TRACE_SWAP_H */
 
 /* This part must be outside protection */

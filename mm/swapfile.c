@@ -1348,9 +1348,10 @@ static bool vma_get_swap_info(struct folio *folio, struct vm_area_struct *vma,
 {
 	struct vma_rmap_data *rmap_data = arg;
 	rmap_data->has_vma = true;
-	spin_lock(&vma->swap_lock);
+	unsigned long flags;
+	spin_lock_irqsave(&vma->swap_lock, flags);
 	rmap_data->si=vma->si;
-	spin_unlock(&vma->swap_lock);
+	spin_unlock_irqrestore(&vma->swap_lock, flags);
 	rmap_data->index = get_swap_index_for_folio(folio, vma, address);
 	trace_vma_get_swap_info(vma, rmap_data->si , folio, rmap_data->index, address);
 	return rmap_data->si == NULL;
@@ -1366,13 +1367,14 @@ static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
 		return false;
 	}
 	rmap_data->index = get_swap_index_for_folio(folio, vma, address);
-	spin_lock(&vma->swap_lock);
+	unsigned long flags;
+	spin_lock_irqsave(&vma->swap_lock, flags);
 	actual_si = vma->si;
 	if(!actual_si){
 		vma->si = rmap_data->si;
 		actual_si = vma->si;
 	}
-	spin_unlock(&vma->swap_lock);
+	spin_unlock_irqrestore(&vma->swap_lock, flags);
 	trace_vma_set_swap_info(vma, actual_si ,rmap_data->si, folio, rmap_data->index, address);
 	rmap_data->si = actual_si;
 	return false;

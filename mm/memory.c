@@ -4904,16 +4904,18 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	pte_t entry;
 
 	/* File mapping without ->vm_ops ? */
-	if (vma->vm_flags & VM_SHARED)
+	if (vma->vm_flags & VM_SHARED){
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: shared file mapping without vm_ops");
 		return VM_FAULT_SIGBUS;
-
+	}
 	/*
 	 * Use pte_alloc() instead of pte_alloc_map(), so that OOM can
 	 * be distinguished from a transient failure of pte_offset_map().
 	 */
-	if (pte_alloc(vma->vm_mm, vmf->pmd))
+	if (pte_alloc(vma->vm_mm, vmf->pmd)) {
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: pte_alloc failed");
 		return VM_FAULT_OOM;
-
+	}
 	/* Use the zero-page for reads */
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
 			!mm_forbids_zeropage(vma->vm_mm)) {
@@ -4921,33 +4923,46 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 						vma->vm_page_prot));
 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
 				vmf->address, &vmf->ptl);
-		if (!vmf->pte)
+		if (!vmf->pte){
+			trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: pte_offset_map_lock failed");
 			goto unlock;
+		}
 		if (vmf_pte_changed(vmf)) {
 			update_mmu_tlb(vma, vmf->address, vmf->pte);
+			trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: pte changed, using zero page");
 			goto unlock;
 		}
 		ret = check_stable_address_space(vma->vm_mm);
-		if (ret)
+		if (ret) {
+			trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: check_stable_address_space failed");
 			goto unlock;
+		}
 		/* Deliver the page fault to userland, check inside PT lock */
 		if (userfaultfd_missing(vma)) {
 			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: userfaultfd_missing");
 			return handle_userfault(vmf, VM_UFFD_MISSING);
 		}
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: using zero page");
 		goto setpte;
 	}
 
 	/* Allocate our own private page. */
 	ret = vmf_anon_prepare(vmf);
-	if (ret)
+	if (ret){
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: vmf_anon_prepare failed");
 		return ret;
+	}
 	/* Returns NULL on OOM or ERR_PTR(-EAGAIN) if we must retry the fault */
 	folio = alloc_anon_folio(vmf);
-	if (IS_ERR(folio))
+	if (IS_ERR(folio)){
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: alloc_anon_folio failed");
 		return 0;
-	if (!folio)
+	}
+	if (!folio){
+		trace_vma_fault_early_return(vmf->vma, vmf->address, "do_anonymous_page: alloc_anon_folio returned NULL");
 		goto oom;
+	}
 
 	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 	#ifdef CONFIG_VMA_RECLAIM

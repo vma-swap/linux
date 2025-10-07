@@ -898,9 +898,9 @@ void log_io(struct bio *bio)
 	sector_t last = bdev->last_bdev_io;
 	unsigned int last_io_size_in_sectors = bdev->last_bdev_io_size_in_sectors;
 	if (last + last_io_size_in_sectors <= sector && last + last_io_size_in_sectors + count_as_seq_window >= sector)
-		bdev->seq_hits += bio_sectors(bio)/8;
+		bdev->seq_hits += (sector + bio_sectors(bio) - (last + last_io_size_in_sectors))/8;
 	else
-		bdev->seq_hits = 0;
+		bdev->seq_hits = 1;
 	bdev->last_bdev_io = sector;
 	bdev->last_bdev_io_size_in_sectors = bio_sectors(bio);
 	size_t hits = bdev->seq_hits;
