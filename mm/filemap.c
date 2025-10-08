@@ -3567,7 +3567,7 @@ retry_find:
 	else
 		folio_clear_seq(folio);
 	if (vmf->pgoff - vma->vm_pgoff >= vma->window_start && vmf->pgoff - vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
-		// fault outside window, reset window
+		// fault inside window, reset window
 		vma->window_start = 0;
 		vma->window_end = 0;
 		vma->swap_ahead_size = MIN_LRU_BATCH;

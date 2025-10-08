@@ -932,6 +932,42 @@ TRACE_EVENT(mm_vmscan_sort_folio,
 		__entry->ref,
 		__get_str(reason))
 );
+TRACE_EVENT(mm_vmscan_is_dirty_seq_hit,
+	TP_PROTO(struct folio *folio, bool is_swapcache, bool is_anon, bool is_swapbacked, bool is_dirty, bool is_writeback, bool is_reclaim, int refs, int seq_hits),
+	TP_ARGS(folio, is_swapcache, is_anon, is_swapbacked, is_dirty, is_writeback, is_reclaim, refs, seq_hits),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+			__field(bool, is_swapcache)
+			__field(bool, is_anon)
+			__field(bool, is_swapbacked)
+			__field(bool, is_dirty)	
+			__field(bool, is_writeback)
+			__field(bool, is_reclaim)
+			__field(int, refs)
+			__field(int, seq_hits)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->is_swapcache = is_swapcache;
+		__entry->is_anon = is_anon;	
+		__entry->is_swapbacked = is_swapbacked;
+		__entry->is_dirty = is_dirty;
+		__entry->is_writeback = is_writeback;
+		__entry->is_reclaim = is_reclaim;
+		__entry->refs = refs;
+		__entry->seq_hits = seq_hits;
+	),
+	TP_printk("folio=%p is_swapcache=%d is_anon=%d is_swapbacked=%d is_dirty=%d is_writeback=%d is_reclaim=%d refs=%d seq_hits=%d",
+		__entry->folio,
+		__entry->is_swapcache,
+		__entry->is_anon,	
+		__entry->is_swapbacked,
+		__entry->is_dirty,
+		__entry->is_writeback,
+		__entry->is_reclaim,
+		__entry->refs,
+		__entry->seq_hits)
+);
 
 #endif
 #endif /* _TRACE_VMSCAN_H */

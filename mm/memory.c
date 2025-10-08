@@ -4743,7 +4743,7 @@ check_folio:
 	else
 		folio_clear_seq(folio);
 	if (vmf->pgoff - vmf->vma->vm_pgoff >= vma->window_start && vmf->pgoff - vmf->vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
-		// fault outside window, reset window
+		// fault inside window, reset window
 		vma->window_start = 0;
 		vma->window_end = 0;
 		vma->swap_ahead_size = MIN_LRU_BATCH;
@@ -4974,7 +4974,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		folio_clear_seq(folio);
 	// Now save the current offset for next fault
 	if (vmf->pgoff - vmf->vma->vm_pgoff >= vma->window_start && vmf->pgoff - vmf->vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
-		// fault outside window, reset window
+		// fault inside window, reset window
 		vma->window_start = 0;
 		vma->window_end = 0;
 		vma->swap_ahead_size = MIN_LRU_BATCH;
