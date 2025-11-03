@@ -378,8 +378,14 @@ struct folio *swap_cache_get_folio(swp_entry_t entry,
 			ra_val = GET_SWAP_RA_VAL(vma);
 			win = SWAP_RA_WIN(ra_val);
 			hits = SWAP_RA_HITS(ra_val);
-			if (readahead)
+			if (readahead){
+				unsigned flags;
+				spin_lock_irqsave(&vma->ra_lock, flags);
+				vma->ra_hits += 1;
+				spin_unlock_irqrestore(&vma->ra_lock, flags);
 				hits = min_t(int, hits + 1, SWAP_RA_HITS_MAX);
+
+			}
 			atomic_long_set(&vma->swap_readahead_info,
 					SWAP_RA_VAL(addr, win, hits));
 		}
@@ -608,19 +614,7 @@ static unsigned int __swapin_nr_pages(unsigned long prev_offset,
 		unsigned int roundup = 4;
 		while (roundup < pages)
 			roundup <<= 1;
-		#ifdef CONFIG_SWAP_VMA
-		/* in case we max hits and previous too.
-		boost pages to the maximum
-		*/
-		if (hits == SWAP_RA_HITS_MAX &&
-			prev_win == SWAP_RA_WIN_MAX)
-			pages = max_pages;
-		else
-			pages = roundup;
-		#else
 		pages = roundup;
-		#endif
-
 	}
 	if (pages > max_pages)
 		pages = max_pages;
@@ -761,12 +755,9 @@ void exit_swap_address_space(unsigned int type)
 	nr_swapper_spaces[type] = 0;
 	swapper_spaces[type] = NULL;
 }
-
-static bool is_single_io_stream(struct vm_area_struct *vma, unsigned long prev_win){
-	unsigned long flags;
-	spin_lock_irqsave(&vma->reclaim_lock, flags);
-	bool ret_val = vma && vma->si && get_seq_hits(vma->si->bdev) > prev_win;
-	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+// mush hold ra_lock
+static bool is_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
+	bool ret_val = vma && vma->si && get_seq_hits(vma->si->bdev) > threshold;
 	return ret_val;
 }
 
@@ -778,10 +769,7 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	unsigned long faddr, prev_faddr, left, right;
 	unsigned int max_win, hits, prev_win, win;
 	#ifdef CONFIG_SWAP_VMA
-	if (!is_single_io_stream(vma, SWAP_RA_WIN(GET_SWAP_RA_VAL(vma))))
 		max_win = READ_ONCE(swap_ra_granularity);
-	else
-		max_win = READ_ONCE(min_swap_ra_granularity);
 	#else
 	max_win = 1 << min(READ_ONCE(page_cluster), SWAP_RA_ORDER_CEILING);
 	#endif
@@ -792,10 +780,33 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	faddr = vmf->address;
 	ra_val = GET_SWAP_RA_VAL(vma);
 	prev_faddr = SWAP_RA_ADDR(ra_val);
+	#ifndef CONFIG_VMA_RECLAIM
 	prev_win = SWAP_RA_WIN(ra_val);
 	hits = SWAP_RA_HITS(ra_val);
+	#else
+	prev_win = vma->ra_size;
+	hits = vma->ra_hits;
+	#endif
 	win = __swapin_nr_pages(PFN_DOWN(prev_faddr), PFN_DOWN(faddr), hits,
 				max_win, prev_win);
+	#ifdef CONFIG_VMA_RECLAIM
+	unsigned flags;
+	spin_lock_irqsave(&vma->ra_lock, flags);
+	if (win == max_win)
+		vma->try_reduce = true;
+	if (vma->try_reduce){
+		if(is_single_io_stream(vma, win)) {
+			vma->ra_size = max(vma->ra_size / 2, min_swap_ra_granularity);
+			win = vma->ra_size;
+		}
+		else
+			vma->try_reduce = false;
+	}
+	vma->ra_size = win;
+	vma->ra_hits = 0;
+	spin_unlock_irqrestore(&vma->ra_lock, flags);
+	#endif
+		
 	atomic_long_set(&vma->swap_readahead_info, SWAP_RA_VAL(faddr, min(win, SWAP_RA_WIN_MAX), 0));
 	if (win == 1)
 		return 1;
@@ -809,13 +820,19 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	right = left + (win << PAGE_SHIFT);
 	if ((long)left < 0)
 		left = 0;
+	#ifdef CONFIG_VMA_RECLAIM
+	if (vma->ra_hits > min_swap_ra_granularity && (left != faddr)){
+		left = faddr;
+		right = left + (win << PAGE_SHIFT);
+	}
 	*start = max3(left, vma->vm_start, faddr & PMD_MASK);
-	#ifdef CONFIG_SWAP_VMA
 	*end = min(right, vma->vm_end);
 	#else
+	*start = max3(left, vma->vm_start, faddr & PMD_MASK);
 	*end = min3(right, vma->vm_end, (faddr & PMD_MASK) + PMD_SIZE);
 	#endif
-	trace_swap_vma_ra_win(vmf, *start, *end, faddr, prev_faddr, hits, win);
+
+	trace_swap_vma_ra_win(vmf, vmf->vma, *start, *end, faddr, prev_faddr, hits, win);
 	return win;
 }
 
@@ -853,14 +870,39 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 		goto skip;
 
 	ilx = targ_ilx - PFN_DOWN(vmf->address - start);
-
+	#ifdef CONFIG_VMA_RECLAIM
+	pmd_t *cur_pmd = vmf->pmd;
+	unsigned long first_addr_in_cur_pmd = vmf->address;
+	#endif
 	blk_start_plug(&plug);
 	for (addr = start; addr < end; ilx++, addr += PAGE_SIZE) {
-		if (!pte++) {
-			pte = pte_offset_map(vmf->pmd, addr);
+		#ifdef CONFIG_VMA_RECLAIM
+		// check if addr belongs to cur pmd
+		if ((first_addr_in_cur_pmd & PMD_MASK) + PMD_SIZE <= addr) {
+			first_addr_in_cur_pmd = addr;
+			cur_pmd = pmd_offset(vmf->pud, addr);
+			if (pmd_none(*cur_pmd) || pmd_bad(*cur_pmd)){
+				trace_swap_no_pte(vmf, addr, cur_pmd, "pmd none or bad");
+				// end of pud abort
+				break;
+			}
+			trace_swap_no_pte(vmf, addr, cur_pmd, "got new pmd");
+			pte = pte_offset_map(cur_pmd, addr);
 			if (!pte)
 				break;
 		}
+		else if (!pte++) {
+			pte = pte_offset_map(cur_pmd, addr);
+			if (!pte)
+			break;
+		}
+		#else
+		if (!pte++) {
+			pte = pte_offset_map(vmf->pmd, addr);
+			if (!pte)
+			break;
+		}
+		#endif
 		pentry = ptep_get_lockless(pte);
 		if (!is_swap_pte(pentry))
 			continue;
@@ -887,6 +929,7 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 	blk_finish_plug(&plug);
 	swap_read_unplug(splug);
 	lru_add_drain();
+	if (win > 1 && vmf->vma)
 skip:
 	/* The folio was likely read above, so no need for plugging here */
 	folio = __read_swap_cache_async(targ_entry, gfp_mask, mpol, targ_ilx,

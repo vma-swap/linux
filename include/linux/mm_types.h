@@ -797,7 +797,12 @@ struct vm_area_struct {
 	struct vm_area_struct *next_vma;
 	struct mem_cgroup *memcg;
 	struct pglist_data *pgdat;
-	spinlock_t reclaim_lock; // protects reclaim fields 
+	spinlock_t reclaim_lock; // protects reclaim fields
+	size_t ra_size;
+	size_t ra_hits;
+	bool try_reduce;
+	spinlock_t ra_lock; // protects read ahead fields
+
 #endif
 } __randomize_layout;
 

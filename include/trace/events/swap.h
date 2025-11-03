@@ -497,10 +497,11 @@ TP_printk("type=%lx offset=%lx addr=%lx.",
           __entry->type, __entry->offset, __entry->vmf->address)
 );
 TRACE_EVENT(swap_vma_ra_win,
-TP_PROTO(struct vm_fault *vmf, unsigned long start, unsigned long end, unsigned long faddr, unsigned long prev_faddr, unsigned int hits, unsigned int win),
-TP_ARGS(vmf, start, end, faddr, prev_faddr, hits, win),
+TP_PROTO(struct vm_fault *vmf, struct vm_area_struct *vma, unsigned long start, unsigned long end, unsigned long faddr, unsigned long prev_faddr, unsigned int hits, unsigned int win),
+TP_ARGS(vmf, vma, start, end, faddr, prev_faddr, hits, win),
 TP_STRUCT__entry(
     __field(struct vm_fault *, vmf)
+    __field(struct vm_area_struct *, vma)
     __field(unsigned long, start)
     __field(unsigned long, end)
     __field(unsigned long, faddr)
@@ -510,6 +511,7 @@ TP_STRUCT__entry(
 ),
 TP_fast_assign(
     __entry->vmf = vmf;
+    __entry->vma = vma;
     __entry->start = start;
     __entry->end = end;
     __entry->faddr = faddr;
@@ -517,8 +519,8 @@ TP_fast_assign(
     __entry->hits = hits;
     __entry->win = win;
 ),
-TP_printk("vmf=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
-          __entry->vmf, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
+TP_printk("vmf=%p vma=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
+          __entry->vmf, __entry->vma, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
 );
 TRACE_EVENT(commit_merge,
     TP_PROTO(struct vma_merge_struct *vmg),
@@ -637,6 +639,24 @@ TRACE_EVENT(vma_fault_early_return,
     ),
     TP_printk("vma=%lx faddr=%lx reason=%s",
         __entry->vma, __entry->faddr, __get_str(reason))
+);
+TRACE_EVENT(swap_no_pte,
+    TP_PROTO(struct vm_fault *vmf, unsigned long addr, pmd_t *pmd, char* reason),
+    TP_ARGS(vmf, addr, pmd, reason),
+    TP_STRUCT__entry(
+        __field(unsigned long, vmf)
+        __field(unsigned long, addr)
+        __field(unsigned long, pmd)
+        __string(reason, reason)
+    ),
+    TP_fast_assign(
+        __entry->vmf = (unsigned long)vmf;
+        __entry->addr = addr;
+        __entry->pmd = (unsigned long)pmd;
+        __assign_str(reason);
+    ),
+    TP_printk("vmf=%lx addr=%lx pmd=%lx reason=%s",
+        __entry->vmf, __entry->addr, __entry->pmd, __get_str(reason))
 );
 #endif /* _TRACE_SWAP_H */
 

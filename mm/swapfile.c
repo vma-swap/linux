@@ -803,6 +803,7 @@ static void vma_alloc_range(struct swap_info_struct *si,
 	if (!(si->flags & SWP_WRITEOK))
 		printk(KERN_ERR "vma_alloc_range: no write access\n");
 
+	// printk(KERN_INFO "%s:%d [CPU:%d] vma allocated map=%p range start=%lu, nr_pages=%u, usage=%u\n",__FILE__,__LINE__,smp_processor_id(),si->swap_map,start,nr_pages,usage);
 	memset(si->swap_map + start, usage, nr_pages);
 	swap_range_alloc(si, nr_pages);
 }
@@ -3760,6 +3761,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		error = -ENOMEM;
 		goto bad_swap_unlock_inode;
 	}
+	printk("swap file allocated at %p\n",swap_map);
 
 	error = swap_cgroup_swapon(si->type, maxpages);
 	if (error)

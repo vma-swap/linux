@@ -511,6 +511,9 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->memcg = NULL;
 	vma->pgdat = NULL;
 	spin_lock_init(&vma->reclaim_lock);	
+	vma->ra_size = 0;
+	vma->try_reduce = 0;
+	spin_lock_init(&vma->ra_lock);
 	#endif
 }
 
@@ -549,6 +552,7 @@ static inline struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	spin_lock_init(&vma->reclaim_lock);
+	spin_lock_init(&vma->ra_lock);
 	#endif
 	return new;
 }

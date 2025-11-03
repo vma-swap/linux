@@ -877,6 +877,11 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->memcg = NULL;
 	vma->pgdat = NULL;
 	spin_lock_init(&vma->reclaim_lock);
+	vma->ra_size = 0;
+	vma->ra_hits = 0;
+	vma->try_reduce = 0;
+	spin_lock_init(&vma->ra_lock);
+
 	#endif
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma_mark_detached(vma, false);
