@@ -480,7 +480,9 @@ static inline int is_page_cache_freeable(struct folio *folio)
 	 * that isolated the folio, the page cache and optional filesystem
 	 * private data at folio->private.
 	 */
+	#ifdef CONFIG_VMA_RECLAIM
 	trace_mm_vmscan_is_page_cache_freeable(folio, folio_ref_count(folio), folio_test_private(folio), folio_test_private_2(folio), folio_nr_pages(folio), get_vma_for_folio(folio));
+	#endif
 	return folio_ref_count(folio) - folio_test_private(folio) ==
 		1 + folio_nr_pages(folio);
 }
@@ -670,7 +672,9 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 	 * congestion state of the swapdevs.  Easy to fix, if needed.
 	 */
 	if (!is_page_cache_freeable(folio)){
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_pageout(folio, PAGE_KEEP, "!is_page_cache_freeable(folio)");
+		#endif
 		return PAGE_KEEP;
 	}
 	if (!mapping) {
@@ -682,15 +686,21 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 			if (try_to_free_buffers(folio)) {
 				folio_clear_dirty(folio);
 				pr_info("%s: orphaned folio\n", __func__);
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_pageout(folio, PAGE_CLEAN, "!mapping then folio_test_private(folio) then try_to_free_buffers(folio)");
+				#endif
 				return PAGE_CLEAN;
 			}
 		}
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_pageout(folio, PAGE_KEEP, "!mapping");
+		#endif
 		return PAGE_KEEP;
 	}
 	if (mapping->a_ops->writepage == NULL){
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_pageout(folio, PAGE_ACTIVATE, "mapping->a_ops->writepage == NULL");
+		#endif
 		return PAGE_ACTIVATE;
 	}
 
@@ -719,7 +729,9 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 			handle_write_error(mapping, folio, res);
 		if (res == AOP_WRITEPAGE_ACTIVATE) {
 			folio_clear_reclaim(folio);
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_pageout(folio, PAGE_ACTIVATE, "folio_clear_dirty_for_io(folio) then res == AOP_WRITEPAGE_ACTIVATE");
+			#endif
 			return PAGE_ACTIVATE;
 		}
 
@@ -1099,7 +1111,9 @@ retry:
 		list_del(&folio->lru);
 
 		if (!folio_trylock(folio)){
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio,1,"!folio_trylock(folio)");
+			#endif
 			goto keep;
 		}
 
@@ -1111,18 +1125,24 @@ retry:
 		sc->nr_scanned += nr_pages;
 
 		if (unlikely(!folio_evictable(folio))){
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio,0,"!folio_evictable(folio)");
+			#endif
 			goto activate_locked;
 		}
 		if (!sc->may_unmap && folio_mapped(folio)){
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio,1,"!sc->may_unmap && folio_mapped(folio)");
+			#endif
 			goto keep_locked;
 		}
 
 		/* folio_update_gen() tried to promote this page? */
 		if (lru_gen_enabled() && !ignore_references &&
 		    folio_mapped(folio) && folio_test_referenced(folio)){
-			trace_mm_vmscan_shrink_folio_list(folio,1,"lru_gen_enabled() && !ignore_references && folio_mapped(folio) && folio_test_referenced(folio)");
+			#ifdef CONFIG_VMA_RECLAIM
+				trace_mm_vmscan_shrink_folio_list(folio,1,"lru_gen_enabled() && !ignore_references && folio_mapped(folio) && folio_test_referenced(folio)");
+				#endif
 			goto keep_locked;
 		}
 
@@ -1197,7 +1217,9 @@ retry:
 			    folio_test_reclaim(folio) &&
 			    test_bit(PGDAT_WRITEBACK, &pgdat->flags)) {
 				stat->nr_immediate += nr_pages;
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio,0,"Case 1");
+				#endif
 				goto activate_locked;
 
 			/* Case 2 above */
@@ -1220,7 +1242,9 @@ retry:
 				 */
 				folio_set_reclaim(folio);
 				stat->nr_writeback += nr_pages;
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio,0,"Case 2");
+				#endif
 				goto activate_locked;
 
 			/* Case 3 above */
@@ -1238,11 +1262,15 @@ retry:
 
 		switch (references) {
 		case FOLIOREF_ACTIVATE:
-			trace_mm_vmscan_shrink_folio_list(folio,0,"FOLIOREF_ACTIVATE");
+		#ifdef CONFIG_VMA_RECLAIM	
+		trace_mm_vmscan_shrink_folio_list(folio,0,"FOLIOREF_ACTIVATE");
+		#endif
 			goto activate_locked;
 		case FOLIOREF_KEEP:
 			stat->nr_ref_keep += nr_pages;
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio,1,"FOLIOREF_KEEP");
+			#endif
 			goto keep_locked;
 		case FOLIOREF_RECLAIM:
 		case FOLIOREF_RECLAIM_CLEAN:
@@ -1257,7 +1285,9 @@ retry:
 		    (thp_migration_supported() || !folio_test_large(folio))) {
 			list_add(&folio->lru, &demote_folios);
 			folio_unlock(folio);
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio,0,"demote_folios");
+			#endif
 			continue;
 		}
 
@@ -1269,15 +1299,21 @@ retry:
 		if (folio_test_anon(folio) && folio_test_swapbacked(folio)) {
 			if (!folio_test_swapcache(folio)) {
 				if (!(sc->gfp_mask & __GFP_IO)){
+					#ifdef CONFIG_VMA_RECLAIM
 					trace_mm_vmscan_shrink_folio_list(folio,1,"folio_test_anon(folio) && folio_test_swapbacked(folio) && !folio_test_swapcache(folio) && !(sc->gfp_mask & __GFP_IO)");
+					#endif
 					goto keep_locked;}
 				if (folio_maybe_dma_pinned(folio)){
+					#ifdef CONFIG_VMA_RECLAIM
 					trace_mm_vmscan_shrink_folio_list(folio,1,"folio_test_anon(folio) && folio_test_swapbacked(folio) && !folio_test_swapcache(folio) && folio_maybe_dma_pinned(folio)");
+					#endif
 					goto keep_locked;}
 				if (folio_test_large(folio)) {
 					/* cannot split folio, skip it */
 					if (!can_split_folio(folio, 1, NULL)){
+						#ifdef CONFIG_VMA_RECLAIM
 						trace_mm_vmscan_shrink_folio_list(folio,0,"folio_test_anon(folio) && folio_test_swapbacked(folio) && !folio_test_swapcache(folio) && folio_test_large(folio) && !can_split_folio(folio, 1, NULL)");
+						#endif
 						goto activate_locked;}
 					/*
 					 * Split partially mapped folios right away.
@@ -1286,18 +1322,24 @@ retry:
 					if (data_race(!list_empty(&folio->_deferred_list) &&
 					    folio_test_partially_mapped(folio)) &&
 					    split_folio_to_list(folio, folio_list)){
-						trace_mm_vmscan_shrink_folio_list(folio,0,"split_folio_to_list(folio, folio_list)");
+						#ifdef CONFIG_VMA_RECLAIM
+							trace_mm_vmscan_shrink_folio_list(folio,0,"split_folio_to_list(folio, folio_list)");
+							#endif
 						goto activate_locked;}
 				}
 				if (!add_to_swap(folio)) {
 					int __maybe_unused order = folio_order(folio);
 
 					if (!folio_test_large(folio)){
+						#ifdef CONFIG_VMA_RECLAIM
 						trace_mm_vmscan_shrink_folio_list(folio,0,"!folio_test_large(folio)");
+						#endif
 						goto activate_locked_split;}
 					/* Fallback to swap normal pages */
 					if (split_folio_to_list(folio, folio_list)){
+						#ifdef CONFIG_VMA_RECLAIM
 						trace_mm_vmscan_shrink_folio_list(folio,0,"split_folio_to_list(folio, folio_list)");
+						#endif
 						goto activate_locked;}
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 					if (nr_pages >= HPAGE_PMD_NR) {
@@ -1308,7 +1350,9 @@ retry:
 #endif
 					count_mthp_stat(order, MTHP_STAT_SWPOUT_FALLBACK);
 					if (!add_to_swap(folio)){
+						#ifdef CONFIG_VMA_RECLAIM
 						trace_mm_vmscan_shrink_folio_list(folio,0,"!add_to_swap(folio)");
+						#endif
 						goto activate_locked_split;}
 				}
 			}
@@ -1355,7 +1399,9 @@ retry:
 				if (!was_swapbacked &&
 				    folio_test_swapbacked(folio))
 					stat->nr_lazyfree_fail += nr_pages;
-				trace_mm_vmscan_shrink_folio_list(folio, 0, "failed to unmap");
+				#ifdef CONFIG_VMA_RECLAIM
+					trace_mm_vmscan_shrink_folio_list(folio, 0, "failed to unmap");
+					#endif
 				goto activate_locked;
 			}
 		}
@@ -1368,7 +1414,9 @@ retry:
 		 * pinning process as that may upset the filesystem.
 		 */
 		if (folio_maybe_dma_pinned(folio)){
+			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_shrink_folio_list(folio, 0, "folio_maybe_dma_pinned(folio)");
+			#endif
 			goto activate_locked;
 		}
 		mapping = folio_mapping(folio);
@@ -1397,20 +1445,28 @@ retry:
 				node_stat_mod_folio(folio, NR_VMSCAN_IMMEDIATE,
 						nr_pages);
 				folio_set_reclaim(folio);
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio, 0, "folio_is_file_lru(folio) && (!current_is_kswapd() || !folio_test_reclaim(folio) || !test_bit(PGDAT_DIRTY, &pgdat->flags))");
+				#endif
 				goto activate_locked;
 			}
 
 			if (references == FOLIOREF_RECLAIM_CLEAN){
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio, 1, "references == FOLIOREF_RECLAIM_CLEAN");
+				#endif
 				goto keep_locked;
 			}
 			if (!may_enter_fs(folio, sc->gfp_mask)){
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio, 1, "!may_enter_fs(folio, sc->gfp_mask)");
+				#endif
 				goto keep_locked;
 			}
 			if (!sc->may_writepage) {
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio, 1, "!sc->may_writepage");
+				#endif
 				goto keep_locked;
 			}
 			/*
@@ -1486,7 +1542,9 @@ retry:
 		 */
 		if (folio_needs_release(folio)) {
 			if (!filemap_release_folio(folio, sc->gfp_mask)){
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio,1,"!filemap_release_folio(folio, sc->gfp_mask)");
+				#endif
 				goto activate_locked;}
 			if (!mapping && folio_ref_count(folio) == 1) {
 				folio_unlock(folio);
@@ -1509,7 +1567,9 @@ retry:
 		if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
 			/* follow __remove_mapping for reference */
 			if (!folio_ref_freeze(folio, 1)){
+				#ifdef CONFIG_VMA_RECLAIM
 				trace_mm_vmscan_shrink_folio_list(folio,1,"!folio_ref_freeze(folio, 1)");
+				#endif
 				goto keep_locked;}
 			/*
 			 * The folio has only one reference left, which is
@@ -1523,7 +1583,9 @@ retry:
 			count_memcg_folio_events(folio, PGLAZYFREED, nr_pages);
 		} else if (!mapping || !__remove_mapping(mapping, folio, true,
 							 sc->target_mem_cgroup)){
-			trace_mm_vmscan_shrink_folio_list(folio,1,"!mapping || !__remove_mapping(mapping, folio, true, sc->target_mem_cgroup)");
+			#ifdef CONFIG_VMA_RECLAIM
+								trace_mm_vmscan_shrink_folio_list(folio,1,"!mapping || !__remove_mapping(mapping, folio, true, sc->target_mem_cgroup)");
+								#endif
 			goto keep_locked;}
 
 		folio_unlock(folio);
@@ -4748,14 +4810,18 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 		folio_set_unevictable(folio);
 		lruvec_add_folio(lruvec, folio);
 		__count_vm_events(UNEVICTABLE_PGCULLED, delta);
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "unevictable");
+		#endif
 		return true;
 	}
 
 	/* promoted */
 	if (gen != lru_gen_from_seq(lrugen->min_seq[type])) {
 		list_move(&folio->lru, &lrugen->folios[gen][type][zone]);
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "promoted");
+		#endif
 		return true;
 	}
 
@@ -4768,7 +4834,9 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 
 		WRITE_ONCE(lrugen->protected[hist][type][tier - 1],
 			   lrugen->protected[hist][type][tier - 1] + delta);
-		trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "protected");
+		#ifdef CONFIG_VMA_RECLAIM
+			   trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "protected");
+			   #endif
 		return true;
 	}
 
@@ -4776,7 +4844,9 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 	if (!folio_test_lru(folio) || zone > sc->reclaim_idx) {
 		gen = folio_inc_gen(lruvec, folio, false);
 		list_move_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "ineligible");
+		#endif
 		return true;
 	}
 
@@ -4793,10 +4863,14 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 	    (type == LRU_GEN_FILE && dirty)) {
 		gen = folio_inc_gen(lruvec, folio, true);
 		list_move(&folio->lru, &lrugen->folios[gen][type][zone]);
+		#ifdef CONFIG_VMA_RECLAIM
 		trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "writeback");
+		#endif
 		return true;
 	}
+	#ifdef CONFIG_VMA_RECLAIM
 	trace_mm_vmscan_sort_folio(folio, folio_ref_count(folio), "not sorted");
+	#endif
 	return false;
 }
 
@@ -4841,7 +4915,7 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
 	trace_mm_vmscan_isolate_folio(folio, folio_ref_count(folio));
 	return true;
 }
-
+#ifdef CONFIG_VMA_RECLAIM
 static bool check_isolate_folio(struct lruvec *lruvec, struct folio *folio, struct scan_control *sc)
 {
 	/* swap constrained */
@@ -4863,6 +4937,7 @@ static bool check_isolate_folio(struct lruvec *lruvec, struct folio *folio, stru
 	}
 	return true;
 }
+#endif
 
 static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 		       int type, int tier, struct list_head *list)

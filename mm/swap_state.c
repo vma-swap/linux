@@ -379,10 +379,12 @@ struct folio *swap_cache_get_folio(swp_entry_t entry,
 			win = SWAP_RA_WIN(ra_val);
 			hits = SWAP_RA_HITS(ra_val);
 			if (readahead){
+				#ifdef CONFIG_SWAP_VMA
 				unsigned flags;
 				spin_lock_irqsave(&vma->ra_lock, flags);
 				vma->ra_hits += 1;
 				spin_unlock_irqrestore(&vma->ra_lock, flags);
+				#endif
 				hits = min_t(int, hits + 1, SWAP_RA_HITS_MAX);
 
 			}
@@ -755,11 +757,13 @@ void exit_swap_address_space(unsigned int type)
 	nr_swapper_spaces[type] = 0;
 	swapper_spaces[type] = NULL;
 }
-// mush hold ra_lock
+#ifdef CONFIG_SWAP_VMA
+// must hold ra_lock
 static bool is_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
 	bool ret_val = vma && vma->si && get_seq_hits(vma->si->bdev) > threshold;
 	return ret_val;
 }
+#endif
 
 static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 			   unsigned long *end)

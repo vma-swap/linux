@@ -1158,6 +1158,7 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
  * Flags checked when a page is freed.  Pages being freed should not have
  * these flags set.  If they are, there is a problem.
  */
+#ifdef CONFIG_VMA_RECLAIM
 #define PAGE_FLAGS_CHECK_AT_FREE				\
 	(1UL << PG_lru		| 1UL << PG_locked	|	\
 	 1UL << PG_private	| 1UL << PG_private_2	|	\
@@ -1165,6 +1166,15 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 	 1UL << PG_active 	|				\
 	 1UL << PG_seq | \
 	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK)
+#else
+#define PAGE_FLAGS_CHECK_AT_FREE				\
+	(1UL << PG_lru		| 1UL << PG_locked	|	\
+	1UL << PG_private	| 1UL << PG_private_2	|	\
+	1UL << PG_writeback	| 1UL << PG_reserved	|	\
+	1UL << PG_active 	|				\
+	1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK)
+#endif
+
 
 /*
  * Flags checked when a page is prepped for return by the page allocator.

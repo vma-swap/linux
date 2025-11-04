@@ -1023,15 +1023,11 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 
 		nr = folio_pte_batch(folio, addr, src_pte, pte, max_nr, flags,
 				     &any_writable, NULL, NULL);
-		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 		folio_ref_add(folio, nr);
-		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 		if (folio_test_anon(folio)) {
 			if (unlikely(folio_try_dup_anon_rmap_ptes(folio, page,
 								  nr, src_vma))) {
-				trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"copy_present_ptes");
 				folio_ref_sub(folio, nr);
-				trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio), "copy_present_ptes");
 				return -EAGAIN;
 			}
 			rss[MM_ANONPAGES] += nr;
@@ -4681,9 +4677,7 @@ check_folio:
 		}
 		rmap_flags |= RMAP_EXCLUSIVE;
 	}
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_swap_page");
 	folio_ref_add(folio, nr_pages - 1);
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_swap_page");
 	flush_icache_pages(vma, page, nr_pages);
 	vmf->orig_pte = pte_advance_pfn(pte, page_idx);
 
@@ -4861,7 +4855,6 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 		addr = ALIGN_DOWN(vmf->address, PAGE_SIZE << order);
 		folio = vma_alloc_folio(gfp, order, vma, addr);
 		if (folio) {
-			trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"alloc_anon_folio");
 			if (mem_cgroup_charge(folio, vma->vm_mm, gfp)) {
 				count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK_CHARGE);
 				folio_put(folio);
@@ -5024,37 +5017,24 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		folio_put(folio);
 		return handle_userfault(vmf, VM_UFFD_MISSING);
 	}
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_1");
 	folio_ref_add(folio, nr_pages - 1);
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_2");
 	add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr_pages);
 	count_mthp_stat(folio_order(folio), MTHP_STAT_ANON_FAULT_ALLOC);
 	folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
 	folio_add_lru_vma(folio, vma);
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_3");
 setpte:
 	if (vmf_orig_pte_uffd_wp(vmf))
 		entry = pte_mkuffd_wp(entry);
 	set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr_pages);
-	if (folio)
-		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_4");
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr_pages);
-	if (folio)
-		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_5");
 unlock:
 	if (vmf->pte){
-		if (folio)
-			trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_6");
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 	}
-	if (folio)
-		trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_7");
 	return ret;
 release:
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_8");
 	folio_put(folio);
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"do_anony_page_9");
 	goto unlock;
 oom:
 	return VM_FAULT_OOM;
@@ -5369,9 +5349,7 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 		ret = VM_FAULT_NOPAGE;
 		goto unlock;
 	}
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"finish_fault");
 	folio_ref_add(folio, nr_pages - 1);
-	trace_mm_vmscan_folio_refs(folio, folio_ref_count(folio),"finish_fault");
 	set_pte_range(vmf, folio, page, nr_pages, addr);
 	type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
 	add_mm_counter(vma->vm_mm, type, nr_pages);

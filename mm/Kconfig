@@ -28,7 +28,7 @@ config SWAP_VMA
 	default n
 	help
 	  This option enables the swapfile arrangement by vmas, which creates a swapfile for each vma
-	  and arrangest the swapout to the folio offest in the vma.
+	  and swaps out a folio to its corresponding offest.
 	  
 	  If unsure, say N.
 
