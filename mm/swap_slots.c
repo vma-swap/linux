@@ -266,7 +266,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 	#endif
 
  	#ifdef CONFIG_SWAP_VMA
-	get_swap_pages(1, &entry, folio_order(folio),folio);
+	int got_pages = get_swap_pages(1, &entry, folio_order(folio),folio);
 	goto out;
 	#endif
 	/*
@@ -300,12 +300,14 @@ repeat:
 	#ifndef CONFIG_SWAP_VMA
 	get_swap_pages(1, &entry, 0);
 	#else
-	get_swap_pages(1, &entry, 0, folio);
+	got_pages = get_swap_pages(1, &entry, 0, folio);
 	#endif
 out:
-	if (mem_cgroup_try_charge_swap(folio, entry)) {
-		put_swap_folio(folio, entry);
-		entry.val = 0;
+	if (got_pages){
+		if (mem_cgroup_try_charge_swap(folio, entry)) {
+			put_swap_folio(folio, entry);
+			entry.val = 0;
+	}
 	}
 	trace_folio_alloc_swap(folio, swp_offset(entry), swp_type(entry));
 	return entry;

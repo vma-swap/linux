@@ -38,7 +38,23 @@ config VMA_RECLAIM
 	default n
 	help
 	  This option enables the vma reclaim, which reclaims folios in their vma order.
-	  If unsure, say N. 
+	  If unsure, say N.
+
+config VMA_RECLAIM_SEQUENTIAL_TOLERANCE
+	int "Sequential fault tolerance window"
+	depends on VMA_RECLAIM
+	range 1 32
+	default 1
+	help
+	  This value represents the tolerance window that a fault will be considered
+	  as sequential. A higher value increases the window for detecting sequential
+	  access patterns, which can improve VMA reclaim efficiency for workloads
+	  with slightly non-contiguous access patterns.
+	  
+	  Range: 1-32 pages
+	  Default: 1 page
+	  
+	  If unsure, leave at default value of 1. 
 
 
 config ZSWAP

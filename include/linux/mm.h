@@ -868,7 +868,9 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	spin_lock_init(&vma->swap_lock);
 	#endif
 	#ifdef CONFIG_VMA_RECLAIM
-	vma->last_fault_offset = 0;
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++)
+		vma->last_fault_offset[i] = CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE - 1;
+	vma->last_fault_idx = 0;
 	vma->window_start = 0;
 	vma->window_end = 0;
 	vma->swap_ahead_size = MIN_LRU_BATCH;

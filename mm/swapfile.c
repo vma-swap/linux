@@ -1332,6 +1332,10 @@ struct vma_rmap_data {
 		struct swap_info_struct *si;
 		pgoff_t index;
 		bool has_vma;
+		unsigned long vm_start;
+		unsigned long vm_end;
+		bool skip_si;
+
 };
 static inline pgoff_t get_swap_index_for_folio(struct folio *folio, struct vm_area_struct *vma, unsigned long address)
 {	pgoff_t index;
@@ -1367,6 +1371,30 @@ static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
 	if(!rmap_data->si){
 		return false;
 	}
+	rmap_data->vm_start = vma->vm_start;
+	rmap_data->vm_end = vma->vm_end;
+	// Convert byte distance to pages: (vm_end - vm_start) is in bytes, divide by PAGE_SIZE via right-shift
+	if (!vma->si){
+		unsigned long vma_pages = (rmap_data->vm_end - rmap_data->vm_start) >> PAGE_SHIFT;
+		// printk(KERN_INFO "%s:%s:%d [CPU:%d] testing if should skip. vma_pages=%lu si_pages=%lu vma=[%lu-%lu] folio=%p address=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma_pages,rmap_data->si->max,rmap_data->vm_start,rmap_data->vm_end,folio,address);
+		if ((vma_pages < 524288 && rmap_data->si->max > 524288) || (vma_pages > 524288 && rmap_data->si->max <= 524288)){
+			// printk(KERN_INFO "%s:%s:%d [CPU:%d] skipping setting si for vma with large size. vma_pages=%lu si_pages=%lu vma=[%lu-%lu] folio=%p address=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma_pages,rmap_data->si->max,rmap_data->vm_start,rmap_data->vm_end,folio,address);
+			rmap_data->skip_si=true;
+			trace_vma_checking_si_vm_size(vma, rmap_data->si,rmap_data->skip_si);
+			return false;
+		}
+		if ((vma_pages <= 256 && rmap_data->si->max > 256 ) || (vma_pages > 256 && rmap_data->si->max <= 256)){
+			// printk(KERN_INFO "%s:%s:%d [CPU:%d] skipping setting si for vma with large size. vma_pages=%lu si_pages=%lu vma=[%lu-%lu] folio=%p address=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma_pages,rmap_data->si->max,rmap_data->vm_start,rmap_data->vm_end,folio,address);
+			rmap_data->skip_si=true;
+			trace_vma_checking_si_vm_size(vma, rmap_data->si,rmap_data->skip_si);
+			return false;
+		}
+		if (vma_pages > rmap_data->si->max){
+			printk(KERN_INFO "%s:%s:%d [CPU:%d] vma not fitting for si size. vma_pages=%d si->max=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma_pages, rmap_data->si->max);
+			BUG_ON(1);
+		}
+	}
+	trace_vma_checking_si_vm_size(vma, rmap_data->si,rmap_data->skip_si);
 	rmap_data->index = get_swap_index_for_folio(folio, vma, address);
 	unsigned long flags;
 	spin_lock_irqsave(&vma->swap_lock, flags);
@@ -1405,12 +1433,16 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, pg
 	return data.si;
 }
 //returns the actual si set
-static struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,struct swap_info_struct *si, pgoff_t* folio_index)
+static struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,struct swap_info_struct *si, pgoff_t* folio_index, bool* skip_si)
 {
 	struct vma_rmap_data data = {
 		.si = si,
 		.index = 0,
 		.has_vma = false,
+		.vm_start = 0,
+		.vm_end = 0,
+		.skip_si = false
+
 	};
 
 	enum ttu_flags flags = TTU_BATCH_FLUSH;
@@ -1427,8 +1459,17 @@ static struct swap_info_struct *set_swap_info_for_folio(struct folio *folio,stru
 
 	*folio_index = data.index;
 	if(!data.has_vma){
-		printk(KERN_INFO "%s:%s:%d [CPU:%d] folio has no vma. si=%p folio=%p\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
+		// printk(KERN_INFO "%s:%s:%d [CPU:%d] folio has no vma. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio,*folio_index);
 		return NULL;
+	}
+	if (data.skip_si){
+		*skip_si = true;
+		// printk(KERN_INFO "%s:%s:%d [CPU:%d] skipping setting si for folio. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio,*folio_index);
+	}
+	else
+	{
+		*skip_si = false;
+		// printk(KERN_INFO "%s:%s:%d [CPU:%d] set si for folio. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),data.si,folio,*folio_index);
 	}
 	return data.si;
 }
@@ -1478,19 +1519,23 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 
 start_over:
 	node = numa_node_id();
+	bool skip_si = false;
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		#ifdef CONFIG_SWAP_VMA
 		if (si->nr_vmas > 0)
 			continue;
-		struct swap_info_struct *actual_si = set_swap_info_for_folio(folio, si, &folio_index);
-		if(si == actual_si)
+		struct swap_info_struct *actual_si = set_swap_info_for_folio(folio, si, &folio_index, &skip_si);
+		if (skip_si)
+			continue;
+		if (si == actual_si)
 			si->nr_vmas++;
 		else{
 			if(!actual_si)
 			{
 				spin_unlock(&swap_avail_lock);
+				n_ret = 0;
 				goto noswap;
 			}
 			si = actual_si;
@@ -2071,8 +2116,10 @@ void free_swap_and_cache_nr(swp_entry_t entry, int nr)
 	if (!si)
 		return;
 
-	if (WARN_ON(end_offset > si->max))
+	if (WARN_ON(end_offset > si->max)){
+		printk(KERN_ERR "end_offset=%lu si->max=%lu\n",end_offset, si->max);
 		goto out;
+	}
 
 	/*
 	 * First free all entries in the range.
@@ -3664,6 +3711,33 @@ err_free:
 err:
 	return ERR_PTR(err);
 }
+#ifdef CONFIG_SWAP_VMA
+void clear_swapfile(struct vm_area_struct *vma)
+{
+	struct swap_info_struct *si = NULL;
+	unsigned long flags;
+	spin_lock_irqsave(&vma->swap_lock, flags);
+	if (!vma->si) {
+		spin_unlock_irqrestore(&vma->swap_lock, flags);
+		return;
+	}
+	si = vma->si;
+	spin_unlock_irqrestore(&vma->swap_lock, flags);
+	trace_swapfile_clear(si->type);
+	printk("Clearing swapfile type %d\n",si->type);
+	// BUG_ON(1);
+	// spin_lock(&si->lock);
+	// memset(si->swap_map, 0, si->max);
+	// memset(si->zeromap, 0, BITS_TO_LONGS(si->max) * sizeof(long));
+	// atomic_long_set(&si->inuse_pages, SWAP_USAGE_OFFLIST_BIT);
+	// lastly, set nr_vmas to 0
+	spin_lock(&swap_avail_lock);
+	si->nr_vmas = 0;
+	spin_unlock(&swap_avail_lock);
+	// spin_unlock(&si->lock);
+
+}
+#endif
 
 SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 {

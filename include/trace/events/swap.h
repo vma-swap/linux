@@ -347,6 +347,22 @@ TP_fast_assign(
 TP_printk("vma=%p si=%p folio=%p index=%d address=%lx.",
           __entry->vma, __entry->si, __entry->folio, __entry->index, __entry->address)
 );
+TRACE_EVENT(vma_checking_si_vm_size,
+TP_PROTO(struct vm_area_struct *vma, struct swap_info_struct* si, bool skip_vma),
+TP_ARGS(vma, si, skip_vma),
+TP_STRUCT__entry(
+    __field(struct vm_area_struct *, vma)
+    __field(struct swap_info_struct*, si)
+    __field(bool, skip_vma)
+
+),
+TP_fast_assign(
+    __entry->vma = vma;
+    __entry->si = si;
+),
+TP_printk("vma=%p si=%p vm_start=%lx vm_end=%lx si_pages=%lx skip=%d.",
+          __entry->vma, __entry->si, __entry->vma->vm_start,__entry->vma->vm_end,__entry->si->max, __entry->skip_vma)
+);
 TRACE_EVENT(get_swap_index_for_folio,
 TP_PROTO(struct vm_area_struct* vma, struct folio *folio, int index, unsigned long address),
 TP_ARGS(vma, folio, index, address),
@@ -657,6 +673,18 @@ TRACE_EVENT(swap_no_pte,
     ),
     TP_printk("vmf=%lx addr=%lx pmd=%lx reason=%s",
         __entry->vmf, __entry->addr, __entry->pmd, __get_str(reason))
+);
+TRACE_EVENT(swapfile_clear,
+    TP_PROTO(unsigned long type),
+    TP_ARGS(type),
+    TP_STRUCT__entry(
+        __field(unsigned long, type)
+    ),
+    TP_fast_assign(
+        __entry->type = type;
+    ),
+    TP_printk("swap_type=%lx",
+        __entry->type)
 );
 #endif /* _TRACE_SWAP_H */
 

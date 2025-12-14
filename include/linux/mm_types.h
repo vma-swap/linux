@@ -789,7 +789,8 @@ struct vm_area_struct {
 	spinlock_t swap_lock; // protects vma->si
 #endif
 #ifdef CONFIG_VMA_RECLAIM
-	pgoff_t last_fault_offset; // this is used to detect sequential faults
+	pgoff_t last_fault_offset[CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE]; // this is used to detect sequential faults
+	int last_fault_idx; // index into last_fault_offset[]
 	pgoff_t window_start;
 	pgoff_t window_end;
 	size_t swap_ahead_size; 

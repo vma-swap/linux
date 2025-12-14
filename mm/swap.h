@@ -48,7 +48,9 @@ static inline pgoff_t swap_cache_index(swp_entry_t entry)
 	BUILD_BUG_ON((SWP_OFFSET_MASK | SWAP_ADDRESS_SPACE_MASK) != SWP_OFFSET_MASK);
 	return swp_offset(entry) & SWAP_ADDRESS_SPACE_MASK;
 }
-
+#ifdef CONFIG_SWAP_VMA
+void clear_swapfile(struct vm_area_struct *vma);
+#endif
 void show_swap_cache_info(void);
 bool add_to_swap(struct folio *folio);
 void *get_shadow_from_swap_cache(swp_entry_t entry);
