@@ -307,6 +307,8 @@ struct percpu_cluster {
 struct swap_info_struct {
 	#ifdef CONFIG_SWAP_VMA
 	int nr_vmas;		/* number of vmas using this swap. this should be changes to a pointer to VMA since swapoff may leave a dangling pointer from the vma to the swap_info_struct */
+	unsigned long vm_start;
+	unsigned long vm_end;
 	#endif
 	struct percpu_ref users;	/* indicate and keep swap device valid. */
 	unsigned long	flags;		/* SWP_USED etc: see above */

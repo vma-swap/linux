@@ -3527,14 +3527,14 @@ static void remove_from_seq_vma(struct scan_control *sc, struct vm_area_struct *
 				unsigned long flags2;
 				if (prev > vma) {
 					spin_lock_irqsave(&vma->reclaim_lock, flags1);
-					spin_lock_irqsave(&prev->reclaim_lock, flags2);
+					spin_lock_irqsave_nested(&prev->reclaim_lock, flags2,1);
 					prev->next_vma = vma->next_vma;
 					vma->next_vma = NULL;
 					spin_unlock_irqrestore(&prev->reclaim_lock, flags2);
 					spin_unlock_irqrestore(&vma->reclaim_lock, flags1);
 				} else {
 					spin_lock_irqsave(&prev->reclaim_lock, flags2);
-					spin_lock_irqsave(&vma->reclaim_lock, flags1);
+					spin_lock_irqsave_nested(&vma->reclaim_lock, flags1,1);
 					prev->next_vma = vma->next_vma;
 					vma->next_vma = NULL;
 					spin_unlock_irqrestore(&vma->reclaim_lock, flags1);
@@ -4130,13 +4130,13 @@ static struct folio* get_next_folio_for_folio(struct folio* cur_folio,bool* is_d
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio)) {
-		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
 		if (data.next_folio && !folio_test_anon(data.next_folio)) {
 			data.next_folio = NULL;
 		}
 	}
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
-		rmap_walk_file_no_yield(cur_folio, &rwc, false);
+		rmap_walk_file_no_yield(cur_folio, &rwc, true);
 		if (data.next_folio && (!folio_is_file_lru(data.next_folio) || !data.next_folio->mapping)) {
 			data.next_folio = NULL;
 		}
@@ -4158,13 +4158,13 @@ static struct folio* get_prev_folio_for_folio(struct folio* cur_folio,bool* is_d
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio)) {
-		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
 		if (data.prev_folio && !folio_test_anon(data.prev_folio)) {
 			data.prev_folio = NULL;
 		}
 	}
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
-		rmap_walk_file_no_yield(cur_folio, &rwc, false);
+		rmap_walk_file_no_yield(cur_folio, &rwc, true);
 		if (data.prev_folio && (!folio_is_file_lru(data.prev_folio) || !data.prev_folio->mapping)) {
 			data.prev_folio = NULL;
 		}
@@ -4185,9 +4185,9 @@ struct vm_area_struct* get_vma_for_folio(struct folio* cur_folio){
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio))
-		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) 
-		rmap_walk_file_no_yield(cur_folio, &rwc, false);
+		rmap_walk_file_no_yield(cur_folio, &rwc, true);
 	pgoff_t window_start = 0;
 	pgoff_t window_end = 0;
 	size_t swap_ahead_size = 0;
@@ -4932,7 +4932,7 @@ static bool check_isolate_folio(struct lruvec *lruvec, struct folio *folio, stru
 	}
 	/* raced with another isolation */
 	if (!folio_test_lru(folio)) {
-		// printk(KERN_DEBUG "check_isolate_folio: folio_test_lru succeeded %p\n", folio);
+		printk(KERN_DEBUG "folio_test_clear_lru failed in check_isolate_folio", folio);
 		return false;
 	}
 	return true;
@@ -5030,9 +5030,14 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 								spin_unlock_irqrestore(&vma->reclaim_lock, flags);
 						}
 						else{
-							isolate_folio(lruvec, folio, sc);
-							list_add(&folio->lru, list);
-							isolated += delta;
+							if(isolate_folio(lruvec, folio, sc)){
+								list_add(&folio->lru, list);
+								isolated += delta;
+							}
+							else {
+								list_move(&folio->lru, &moved);
+								skipped_zone += delta;
+							}
 							continue;
 						}
 						if(!evictable_folio) {
@@ -5060,6 +5065,7 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 								!folio_evictable(evictable_folio)
 								)
 							{
+								// abort seq reclaiming
 								VM_WARN_ON_ONCE_FOLIO(evictable_folio == folio, evictable_folio);
 								spin_lock_irqsave(&vma->reclaim_lock, flags);
 								vma->window_start = 0;
@@ -5135,9 +5141,14 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 							sc->vma_reclamation = false;
 							remove_from_seq_vma(sc, vma);
 							if (!is_evicted){
-								isolate_folio(lruvec, folio, sc);
-								list_add(&folio->lru, list);
-								isolated += delta;
+								if(isolate_folio(lruvec, folio, sc)){
+									list_add(&folio->lru, list);
+									isolated += delta;
+								}
+								else {
+									list_move(&folio->lru, &moved);
+									skipped_zone += delta;
+								}
 							}
 						}
 						else {
@@ -5156,9 +5167,14 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 						}
 					}
 					else {
-						isolate_folio(lruvec, folio, sc);
-						list_add(&folio->lru, list);
-						isolated += delta;
+						if(isolate_folio(lruvec, folio, sc)){
+							list_add(&folio->lru, list);
+							isolated += delta;
+						}
+						else {
+							list_move(&folio->lru, &moved);
+							skipped_zone += delta;
+						}
 					}
 				#else
 				else if (isolate_folio(lruvec, folio, sc)) {
