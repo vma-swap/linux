@@ -37,7 +37,7 @@ fi
 # Run the QEMU command and log output
 eval $QEMU_CMD 2>&1 | tee vm.log
 # for i in {1..100}; do dd if=/dev/zero of=/scratch/vma_swaps/swapfile_$i.swap bs=1G count=1 status=progress; done     
-./minimal_bench/a.out -s 200 -b 536870912 100 -i 100 -r 1 -w 1 
+# ./minimal_bench/a.out -s 200 -b 536870912 100 -i 100 -r 1 -w 1 
 # for i in {1..200}; do
 #   sudo swapon /scratch/vma_swaps/swapfile_$i.swap
 # done
@@ -54,4 +54,5 @@ eval $QEMU_CMD 2>&1 | tee vm.log
 # for i in {1..200}; do
 #   sudo echo "/scratch/vma_swaps/swapfile_$i.swap none swap sw 0 0" >> /etc/fstab
 # done
-# ./minimal_bench/a.out -s 200 -b 536870912 -i 1 -r 1 -w 1 
+# ./minimal_bench/a.out -s 200 -b 500000000 -i 1 -r 1 -w 1 -f /scratch/vma_swaps/swapfile_300.swap
+# sudo dd if=/dev/zero of=256K.file bs=256K count=1 conv=fsync

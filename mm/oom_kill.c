@@ -263,7 +263,11 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 	}
 
 	/* Default to all available memory */
+	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	oc->totalpages = totalram_pages() + total_swap_pages;
+	#else
+	oc->totalpages = totalram_pages() + 33554432; // hard coded 128GiB
+	#endif
 
 	if (!IS_ENABLED(CONFIG_NUMA))
 		return CONSTRAINT_NONE;
@@ -285,7 +289,11 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 	 */
 	if (oc->nodemask &&
 	    !nodes_subset(node_states[N_MEMORY], *oc->nodemask)) {
+		#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 		oc->totalpages = total_swap_pages;
+		#else
+		oc->totalpages = 33554432; // hard coded 128GiB
+		#endif
 		for_each_node_mask(nid, *oc->nodemask)
 			oc->totalpages += node_present_pages(nid);
 		return CONSTRAINT_MEMORY_POLICY;
@@ -299,6 +307,9 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 
 	if (cpuset_limited) {
 		oc->totalpages = total_swap_pages;
+		#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+		oc->totalpages += 33554432; // hard coded 128GiB
+		#endif
 		for_each_node_mask(nid, cpuset_current_mems_allowed)
 			oc->totalpages += node_present_pages(nid);
 		return CONSTRAINT_CPUSET;

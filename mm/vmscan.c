@@ -2700,7 +2700,11 @@ static bool can_age_anon_pages(struct pglist_data *pgdat,
 			       struct scan_control *sc)
 {
 	/* Aging the anon LRU is valuable if swap is present: */
+	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	if (total_swap_pages > 0)
+	#else
+	if (1)
+	#endif
 		return true;
 
 	/* Also valuable if anon pages can be demoted: */

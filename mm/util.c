@@ -987,8 +987,11 @@ unsigned long vm_commit_limit(void)
 	else
 		allowed = ((totalram_pages() - hugetlb_total_pages())
 			   * sysctl_overcommit_ratio / 100);
+	#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+	allowed += 33554432; // hard coded 128GiB
+	#else
 	allowed += total_swap_pages;
-
+	#endif
 	return allowed;
 }
 
@@ -1047,8 +1050,13 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		return 0;
 
 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
-		if (pages > totalram_pages() + total_swap_pages)
+		#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+		if (pages > totalram_pages() + 33554432)
 			goto error;
+		#else
+			if (pages > totalram_pages() + total_swap_pages)
+				goto error;
+		#endif
 		return 0;
 	}
 

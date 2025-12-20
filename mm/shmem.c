@@ -1550,9 +1550,10 @@ static int shmem_writepage(struct page *page, struct writeback_control *wbc)
 
 	if (WARN_ON_ONCE((info->flags & VM_LOCKED) || sbinfo->noswap))
 		goto redirty;
-
+	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	if (!total_swap_pages)
 		goto redirty;
+	#endif
 
 	/*
 	 * If CONFIG_THP_SWAP is not enabled, the large folio should be

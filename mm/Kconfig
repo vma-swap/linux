@@ -27,10 +27,15 @@ config SWAP_VMA
 	depends on SWAP
 	default n
 	help
-	  This option enables the swapfile arrangement by vmas, which creates a swapfile for each vma
-	  and swaps out a folio to its corresponding offest.
+	  This option enables the swapfile arrangement by vmas, which swaps out a folio to its corresponding offest.
 	  
 	  If unsure, say N.
+config SWAP_VMA_DYNAMIC_ALLOCATION
+	string "directory to store the swapfiles"
+	depends on SWAP_VMA
+	default "/swap_files"
+	help
+	  This option enables the dynamic allocation of swapfile, which allocates a swapfile for each vma. on the fly.
 
 config VMA_RECLAIM
 	bool "enable vma reclaim"

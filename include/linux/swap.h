@@ -495,7 +495,11 @@ static inline bool vm_swap_full(void)
 
 static inline long get_nr_swap_pages(void)
 {
+	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	return atomic_long_read(&nr_swap_pages);
+	#else
+	return 33554432; // hard coded 128GiB
+	#endif
 }
 
 extern void si_swapinfo(struct sysinfo *);
@@ -532,7 +536,14 @@ sector_t swap_folio_sector(struct folio *folio);
 
 static inline void put_swap_device(struct swap_info_struct *si)
 {
-	percpu_ref_put(&si->users);
+	/* Use simple atomic refcount if percpu_ref is not initialized */
+	/* Check if percpu_ref was never initialized: data is NULL or DEAD flag is set */
+	if (!si->users.data || (si->users.percpu_count_ptr & __PERCPU_REF_DEAD)) {
+		extern void simple_swap_ref_put(struct swap_info_struct *si);
+		simple_swap_ref_put(si);
+	} else {
+		percpu_ref_put(&si->users);
+	}
 }
 
 #else /* CONFIG_SWAP */
