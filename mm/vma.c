@@ -672,26 +672,6 @@ static int commit_merge(struct vma_merge_struct *vmg,
 			vma_iter_store(vmg->vmi, adjust);
 		}
 	}
-	#ifdef CONFIG_SWAP_VMA
-	unsigned long flags;
-	spin_lock_irqsave(&vmg->vma->swap_lock,flags);
-	bool nullify_si = true;
-	if (vmg->vma->si){
-		// printk("KERNEL_SWAP_VMA: commit_merge: vma start %lu si start %lu\n", vmg->vma->vm_start, vmg->vma->si->vm_start);
-		if (vmg->vma->si->vm_start == vmg->vma->vm_start){
-			unsigned long vma_pages = (vmg->vma->vm_end - vmg->vma->vm_start) >> PAGE_SHIFT;
-			// printk("KERNEL_SWAP_VMA: commit_merge: vma pages %lu si max %lu\n", vma_pages, vmg->vma->si->max);
-			if (vma_pages <= vmg->vma->si->max){
-				nullify_si = false;
-			}
-		}
-		if (nullify_si){
-			vmg->vma->si = NULL;
-		}
-	}
-	spin_unlock_irqrestore(&vmg->vma->swap_lock,flags);
-	trace_commit_merge(vmg);
-	#endif
 	vma_complete(&vp, vmg->vmi, vmg->vma->vm_mm);
 
 	return 0;

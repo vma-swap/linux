@@ -512,6 +512,9 @@ extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order);
 #else
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order, struct folio *folio);
 extern int get_avail_swap_info_count(void);
+#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+extern void mkswap_swapoff_on_vma_free(struct swap_info_struct *si);
+#endif
 #endif
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t, int);
