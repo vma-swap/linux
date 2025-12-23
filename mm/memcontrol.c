@@ -1610,17 +1610,11 @@ unsigned long mem_cgroup_get_max(struct mem_cgroup *memcg)
 			unsigned long swap = READ_ONCE(memcg->memsw.max) - max;
 
 			max += min(swap, (unsigned long)total_swap_pages);
-			#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-			max += 33554432; // hard coded 128GiB
-			#endif
 		}
 	} else {
 		if (mem_cgroup_swappiness(memcg))
 			max += min(READ_ONCE(memcg->swap.max),
 				   (unsigned long)total_swap_pages);
-		#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-		max += 33554432; // hard coded 128GiB
-		#endif
 	}
 	return max;
 }
@@ -3068,13 +3062,8 @@ unsigned long mem_cgroup_usage(struct mem_cgroup *memcg, bool swap)
 		 */
 		val = global_node_page_state(NR_FILE_PAGES) +
 			global_node_page_state(NR_ANON_MAPPED);
-		#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 		if (swap)
 			val += total_swap_pages - get_nr_swap_pages();
-		#else
-		if (swap)
-			val += 33554432; // hard coded 128GiB
-		#endif
 	} else {
 		if (!swap)
 			val = page_counter_read(&memcg->memory);

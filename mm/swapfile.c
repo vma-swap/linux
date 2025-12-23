@@ -1534,9 +1534,9 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, pg
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_locked(folio, &rwc);
+		rmap_walk_anon_no_yield(folio, &rwc, true);
 	else
-		rmap_walk(folio, &rwc);
+		rmap_walk_anon_no_yield(folio, &rwc, false);
 	*folio_index = data.index;
 	trace_get_swap_info_from_folio(folio, data.si, *folio_index);
 	*vm_start = data.vm_start;
@@ -3167,11 +3167,13 @@ static void enable_swap_info(struct swap_info_struct *si, int prio,
 	/*
 	 * Finished initializing swap device, now it's safe to reference it.
 	 */
-	/* For simple atomic refcount, mark as alive by clearing DEAD flag */
-	if (si->users.percpu_count_ptr & __PERCPU_REF_DEAD) {
-		si->users.percpu_count_ptr &= ~__PERCPU_REF_DEAD;
+	/* Check if we're using simple atomic refcount (users.data is NULL) */
+	if (!si->users.data || (si->users.percpu_count_ptr & __PERCPU_REF_DEAD)) {
+		/* Simple atomic refcount path - mark as alive by clearing DEAD flag */
+		si->users.percpu_count_ptr = (unsigned long)NULL | __PERCPU_REF_ATOMIC;
 		atomic_set(&simple_swap_refcount[si->type], 1);
 	} else {
+		/* percpu_ref path - resurrect if it was killed */
 		percpu_ref_resurrect(&si->users);
 	}
 	spin_lock(&swap_lock);

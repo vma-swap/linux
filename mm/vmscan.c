@@ -2700,11 +2700,7 @@ static bool can_age_anon_pages(struct pglist_data *pgdat,
 			       struct scan_control *sc)
 {
 	/* Aging the anon LRU is valuable if swap is present: */
-	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	if (total_swap_pages > 0)
-	#else
-	if (1)
-	#endif
 		return true;
 
 	/* Also valuable if anon pages can be demoted: */
@@ -4134,13 +4130,13 @@ static struct folio* get_next_folio_for_folio(struct folio* cur_folio,bool* is_d
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio)) {
-		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
 		if (data.next_folio && !folio_test_anon(data.next_folio)) {
 			data.next_folio = NULL;
 		}
 	}
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
-		rmap_walk_file_no_yield(cur_folio, &rwc, true);
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
 		if (data.next_folio && (!folio_is_file_lru(data.next_folio) || !data.next_folio->mapping)) {
 			data.next_folio = NULL;
 		}
@@ -4162,13 +4158,13 @@ static struct folio* get_prev_folio_for_folio(struct folio* cur_folio,bool* is_d
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio)) {
-		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
 		if (data.prev_folio && !folio_test_anon(data.prev_folio)) {
 			data.prev_folio = NULL;
 		}
 	}
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) {
-		rmap_walk_file_no_yield(cur_folio, &rwc, true);
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
 		if (data.prev_folio && (!folio_is_file_lru(data.prev_folio) || !data.prev_folio->mapping)) {
 			data.prev_folio = NULL;
 		}
@@ -4189,9 +4185,9 @@ struct vm_area_struct* get_vma_for_folio(struct folio* cur_folio){
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (folio_test_anon(cur_folio))
-		rmap_walk_anon_no_yield(cur_folio, &rwc, true);
+		rmap_walk_anon_no_yield(cur_folio, &rwc, false);
 	else if (folio_is_file_lru(cur_folio) && cur_folio->mapping) 
-		rmap_walk_file_no_yield(cur_folio, &rwc, true);
+		rmap_walk_file_no_yield(cur_folio, &rwc, false);
 	pgoff_t window_start = 0;
 	pgoff_t window_end = 0;
 	size_t swap_ahead_size = 0;

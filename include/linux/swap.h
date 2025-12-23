@@ -495,11 +495,7 @@ static inline bool vm_swap_full(void)
 
 static inline long get_nr_swap_pages(void)
 {
-	#ifndef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 	return atomic_long_read(&nr_swap_pages);
-	#else
-	return 33554432; // hard coded 128GiB
-	#endif
 }
 
 extern void si_swapinfo(struct sysinfo *);

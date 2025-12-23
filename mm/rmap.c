@@ -2666,7 +2666,14 @@ void rmap_walk_anon_no_yield(struct folio *folio,
 		/* anon_vma disappear under us? */
 		VM_BUG_ON_FOLIO(!anon_vma, folio);
 	} else {
-		anon_vma = rmap_walk_anon_lock(folio, rwc);
+		// non blocking version of rmap_walk_anon_lock
+		rcu_read_lock();
+		anon_vma = folio_anon_vma(folio);
+		if (!anon_vma)
+			return;
+		while (!anon_vma_trylock_read(anon_vma))
+			cpu_relax();
+		rcu_read_unlock();
 	}
 	if (!anon_vma)
 		return;
