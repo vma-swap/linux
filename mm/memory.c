@@ -4737,18 +4737,13 @@ check_folio:
 	unsigned long flags;
 	spin_lock_irqsave(&vma->reclaim_lock, flags);
 	bool is_sequential = false;
-	int idx = vma->last_fault_idx; 
-	int tested_count = 0;
-	while (vma->last_fault_offset[idx] && tested_count < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE) {
-		if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset[idx] + 1) {
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
+		if (vma->last_fault_offset[i] != -1 && vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset[i] + 1) {
 			is_sequential = true;
 			break;
 		}
-		idx++;
-		idx %= CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
-		tested_count++;
 	}
-	if (is_sequential || vmf->pgoff - vmf->vma->vm_pgoff == 0)
+	if (is_sequential)
 		folio_set_seq(folio);
 	else
 		folio_clear_seq(folio);
@@ -4758,13 +4753,16 @@ check_folio:
 		vma->window_end = 0;
 		vma->swap_ahead_size = MIN_LRU_BATCH;
 	}
-	unsigned long old_addr = vma->vm_start + ((vmf->vma->last_fault_offset[vma->last_fault_idx]) << PAGE_SHIFT);
+	unsigned long old_addr = 0;
+	if (vma->last_fault_idx != -1) {
+		old_addr = vma->vm_start + ((vmf->vma->last_fault_offset[vma->last_fault_idx]) << PAGE_SHIFT);
+	}
 	pgoff_t start = vmf->vma->window_start;
 	pgoff_t end = vmf->vma->window_end;
 	// Since we test forward, we need to store backwards to maintain proper sequence
-	int new_idx = (vma->last_fault_idx - 1 + CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
+	int new_idx = (vma->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
 	vma->last_fault_idx = new_idx;
-	vma->last_fault_offset[vma->last_fault_idx] = vmf->pgoff - vmf->vma->vm_pgoff;
+	vma->last_fault_offset[new_idx] = vmf->pgoff - vmf->vma->vm_pgoff;
 	size_t swap_ahead = vma->swap_ahead_size;
 	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
 	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff, start, end, swap_ahead, folio,folio_ref_count(folio));
@@ -4981,18 +4979,13 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	unsigned long flags;
 	spin_lock_irqsave(&vma->reclaim_lock, flags);
 	bool is_sequential = false;
-	int idx = vma->last_fault_idx; 
-	int tested_count = 0;
-	while (vma->last_fault_offset[idx] && tested_count < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE) {
-		if (vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset[idx] + 1) {
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
+		if (vma->last_fault_offset[i] != -1 && vmf->pgoff - vmf->vma->vm_pgoff == vma->last_fault_offset[i] + 1) {
 			is_sequential = true;
 			break;
 		}
-		idx++;
-		idx %= CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
-		tested_count++;
 	}
-	if (is_sequential || vmf->pgoff - vmf->vma->vm_pgoff == 0)
+	if (is_sequential)
 		folio_set_seq(folio);
 	else
 		folio_clear_seq(folio);
@@ -5003,13 +4996,17 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 		vma->window_end = 0;
 		vma->swap_ahead_size = MIN_LRU_BATCH;
 	}
-	unsigned long old_addr = vma->vm_start + ((vmf->vma->last_fault_offset[vma->last_fault_idx]) << PAGE_SHIFT);
+	unsigned long old_addr = 0;
+	if (vma->last_fault_idx != -1) {
+		old_addr = vma->vm_start + ((vmf->vma->last_fault_offset[vma->last_fault_idx]) << PAGE_SHIFT);
+	}
 	pgoff_t start = vmf->vma->window_start;
 	pgoff_t end = vmf->vma->window_end;
 	// Since we test forward, we need to store backwards to maintain proper sequence
-	int new_idx = (vma->last_fault_idx - 1 + CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
+	int new_idx = (vma->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
 	vma->last_fault_idx = new_idx;
-	vma->last_fault_offset[vma->last_fault_idx] = vmf->pgoff - vmf->vma->vm_pgoff;	size_t swap_ahead = vma->swap_ahead_size;
+	vma->last_fault_offset[new_idx] = vmf->pgoff - vmf->vma->vm_pgoff;
+	size_t swap_ahead = vma->swap_ahead_size;
 	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
 	trace_vma_fault(vmf->vma, vma->vm_start + ((vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vmf->vma->vm_pgoff, start, end, swap_ahead,folio, folio_ref_count(folio));
 	#endif

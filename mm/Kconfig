@@ -61,6 +61,19 @@ config VMA_RECLAIM_SEQUENTIAL_TOLERANCE
 	  
 	  If unsure, leave at default value of 1. 
 
+config VMA_RECLAIM_GO_BACK_SIZE_MIB
+	int "Go back size in MiB"
+	depends on VMA_RECLAIM
+	range 1 1024
+	default 1
+	help
+	  This value represents how far the sequntial reclaimation mechanism will go back in the vma.	
+	  
+	  Range: 1-1024 MiB
+	  Default: 1 MiB
+	  
+	  If unsure, leave at default value of 1 MiB. 
+
 
 config ZSWAP
 	bool "Compressed cache for swap pages"
