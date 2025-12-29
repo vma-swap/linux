@@ -25,12 +25,38 @@
 #include <linux/sched/task.h>
 #include <linux/delayacct.h>
 #include <linux/zswap.h>
+#include <trace/events/swap.h>
 #include "swap.h"
+    //   microbench-6601  [014]   118.732653: mm_vmscan_should_abort_scan: nr_reclaimed=10 nr_to_reclaim=32 order=0 root_reclaim=0
+	// microbench-6601  [014]   118.834650: mm_vmscan_should_abort_scan: nr_reclaimed=11 nr_to_reclaim=32 order=0 root_reclaim=0
+// 0xffd400001f7e1ec0
+// when picked up for reclaim:
+// microbench-6793  [014]   115.416916: mm_vmscan_is_dirty_seq_hit: folio=0xffd4000013f41940 is_swapcache=0 is_anon=1 is_swapbacked=1 is_dirty=1 is_writeback=0 is_reclaim=0 refs=2 seq_hits=29
+// bad one:
+// microbench-6793  [014]   116.368686: mm_vmscan_folio_refs: folio=0xffd400001e80e180 refs=1 reason=scan_folios
+//       microbench-6793  [014]   116.368686: mm_vmscan_sort_folio: folio=0xffd400001e80e180 ref=1 reason=not sorted
+//       microbench-6793  [014]   116.368687: mm_vmscan_folio_refs: folio=0xffd400001e80e180 refs=1 reason=scan_folios
+//       microbench-6793  [014]   116.368687: mm_vmscan_get_vma_for_folio: folio=0xffd400001e80e180 vma=0xff1100039f062ca0 window_start=25472 window_end=25536 swap_ahead_size=64 is_anon=1 is_file=0 has_mapping=1
+// first reclaim after starting vma reclaim
+//       microbench-6860  [014]   126.065629: mm_vmscan_shrink_folio_list: folio=0xffd40000138a2d00 keep_locked=1 reason=nr_reclaimed += nr_pages. free_it
+// will reclaim:
+// microbench-6860  [014]   131.126744: mm_vmscan_folio_refs: folio=0xffd400001f3d2a00 refs=1 reason=scan_folios
+// microbench-6860  [014]   131.126744: mm_vmscan_sort_folio: folio=0xffd400001f3d2a00 ref=1 reason=not sorted
+// microbench-6860  [014]   131.126744: mm_vmscan_folio_refs: folio=0xffd400001f3d2a00 refs=1 reason=scan_folios
+// microbench-6860  [014]   131.126744: mm_vmscan_get_vma_for_folio: folio=0xffd400001f3d2a00 vma=0xff1100039f0375d0 window_start=0 window_end=0 swap_ahead_size=64 is_anon=1 is_file=0 has_mapping=1
+// microbench-6860  [014]   131.126744: mm_vmscan_isolate_folio: folio=0xffd400001f3d2a00 ref_count=1
+// microbench-6860  [014]   131.126744: mm_vmscan_isolate_folio: folio=0xffd400001f3d2a00 ref_count=2
+// will wb:
+// microbench-6860  [014]   131.126725: mm_vmscan_folio_refs: folio=0xffd40000132d4a40 refs=1 reason=scan_folios
+// microbench-6860  [014]   131.126725: mm_vmscan_folio_refs: folio=0xffd40000132d4a40 refs=1 reason=scan_folios
+// microbench-6860  [014]   131.126725: mm_vmscan_isolate_folio: folio=0xffd40000132d4a40 ref_count=1
+// microbench-6860  [014]   131.126725: mm_vmscan_isolate_folio: folio=0xffd40000132d4a40 ref_count=2
+      
 
 static void __end_swap_bio_write(struct bio *bio)
 {
 	struct folio *folio = bio_first_folio_all(bio);
-
+	trace_swap_end_swap_bio_write(folio);
 	if (bio->bi_status) {
 		/*
 		 * We failed to write the page out to swap-space.
@@ -426,7 +452,7 @@ static void swap_writepage_bdev_sync(struct folio *folio,
 
 	folio_start_writeback(folio);
 	folio_unlock(folio);
-
+	trace_swap_writepage_bdev_sync(folio);
 	submit_bio_wait(&bio);
 	__end_swap_bio_write(&bio);
 }
@@ -447,6 +473,7 @@ static void swap_writepage_bdev_async(struct folio *folio,
 	count_swpout_vm_event(folio);
 	folio_start_writeback(folio);
 	folio_unlock(folio);
+	trace_swap_writepage_bdev_async(folio);
 	submit_bio(bio);
 }
 
@@ -460,6 +487,7 @@ void __swap_writepage(struct folio *folio, struct writeback_control *wbc)
 	 * but that will never affect SWP_FS_OPS, so the data_race
 	 * is safe.
 	 */
+	trace_swap_writepage(folio, sis->flags & SWP_FS_OPS, sis->flags & SWP_SYNCHRONOUS_IO, sis->flags & SWP_SYNCHRONOUS_IO_W);
 	if (data_race(sis->flags & SWP_FS_OPS))
 		swap_writepage_fs(folio, wbc);
 	/*

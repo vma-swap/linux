@@ -40,6 +40,8 @@
 
 #include "internal.h"
 
+#include <trace/events/swap.h>
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/pagemap.h>
 
@@ -180,7 +182,7 @@ static void __folio_batch_add_and_move(struct folio_batch __percpu *fbatch,
 		bool on_lru, bool disable_irq)
 {
 	unsigned long flags;
-
+	trace_swap_folio_batch_add_and_move(folio, on_lru, disable_irq);
 	if (on_lru && !folio_test_clear_lru(folio))
 		return;
 
@@ -217,6 +219,8 @@ static void lru_move_tail(struct lruvec *lruvec, struct folio *folio)
 
 	lruvec_del_folio(lruvec, folio);
 	folio_clear_active(folio);
+	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+	trace_swap_lru_move_tail(folio, folio_test_active(folio), folio_test_reclaim(folio), folio_test_dirty(folio), folio_test_writeback(folio),folio_test_swapcache(folio), lrugen->min_seq[folio_is_file_lru(folio)],MIN_NR_GENS, lrugen->max_seq);
 	lruvec_add_folio_tail(lruvec, folio);
 	__count_vm_events(PGROTATED, folio_nr_pages(folio));
 }
@@ -230,6 +234,7 @@ static void lru_move_tail(struct lruvec *lruvec, struct folio *folio)
  */
 void folio_rotate_reclaimable(struct folio *folio)
 {
+	trace_swap_folio_rotate_reclaimable(folio, folio_test_locked(folio), folio_test_dirty(folio), folio_test_unevictable(folio));
 	if (folio_test_locked(folio) || folio_test_dirty(folio) ||
 	    folio_test_unevictable(folio))
 		return;

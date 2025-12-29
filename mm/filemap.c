@@ -1633,6 +1633,7 @@ void folio_end_writeback(struct folio *folio)
 	 * a gain to justify taking an atomic operation penalty at the
 	 * end of every folio writeback.
 	 */
+	trace_mm_filemap_folio_end_writeback(folio, folio_test_reclaim(folio));
 	if (folio_test_reclaim(folio)) {
 		folio_clear_reclaim(folio);
 		folio_rotate_reclaimable(folio);

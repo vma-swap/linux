@@ -196,6 +196,25 @@ TRACE_EVENT(file_check_and_advance_wb_err,
 			MINOR(__entry->s_dev), __entry->i_ino, __entry->old,
 			__entry->new)
 );
+
+TRACE_EVENT(mm_filemap_folio_end_writeback,
+	TP_PROTO(struct folio *folio, bool reclaim),
+
+	TP_ARGS(folio, reclaim),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(unsigned long, pfn)
+		__field(bool, reclaim)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->pfn = folio_pfn(folio);
+		__entry->reclaim = reclaim;
+	),
+	TP_printk("folio=%p pfn=0x%lx reclaim=%d",
+		__entry->folio, __entry->pfn, __print_flags(__entry->reclaim, "|", true, false))
+);
 #endif /* _TRACE_FILEMAP_H */
 
 /* This part must be outside protection */

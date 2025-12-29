@@ -19,14 +19,14 @@ TRACE_EVENT(swap_entry_alloc_from_cache,
     
     TP_STRUCT__entry(
         __field(unsigned long, entry_val)
-        __field(swp_entry_t *, slots)
+        __field(unsigned long, slots)
         __field(int, cur)
         __field(int, nr)
     ),
     
     TP_fast_assign(
         __entry->entry_val = swp_entry.val;
-        __entry->slots = slots;
+        __entry->slots = (unsigned long)slots;
         __entry->cur = cur;
         __entry->nr = nr;
     ),
@@ -40,12 +40,12 @@ TRACE_EVENT(refill_swap_slots_cache,
     TP_ARGS(slots, nr),
     
     TP_STRUCT__entry(
-        __field(swp_entry_t *, slots)
+        __field(unsigned long, slots)
         __field(int, nr)
     ),
     
     TP_fast_assign(
-        __entry->slots = slots;
+        __entry->slots = (unsigned long)slots;
         __entry->nr = nr;
     ),
     
@@ -161,14 +161,12 @@ TRACE_EVENT(swap_range_free,
         __field(unsigned int, si_flags)
         __field(unsigned int, offset)
         __field(unsigned int, end)
-        __array(unsigned long, stack_entries, 10)
     ),
 
     TP_fast_assign(
         __entry->si_flags = si->flags;
         __entry->offset = offset;
         __entry->end = end;
-
     ),
 
     TP_printk("si_flags=%x offset=%x end=%x",
@@ -359,6 +357,7 @@ TP_STRUCT__entry(
 TP_fast_assign(
     __entry->vma = vma;
     __entry->si = si;
+    __entry->skip_vma = skip_vma;
 ),
 TP_printk("vma=%p si=%p vm_start=%lx vm_end=%lx si_pages=%lx skip=%d.",
           __entry->vma, __entry->si, __entry->vma->vm_start,__entry->vma->vm_end,__entry->si->max, __entry->skip_vma)
@@ -685,6 +684,460 @@ TRACE_EVENT(swapfile_clear,
     ),
     TP_printk("swap_type=%lx",
         __entry->type)
+);
+
+/* mkswap_create_file trace events */
+TRACE_EVENT(mkswap_create_file_entry,
+    TP_PROTO(unsigned long size, unsigned long vm_start, unsigned long vm_end, bool mutex_held, unsigned short swap_file_count),
+    TP_ARGS(size, vm_start, vm_end, mutex_held, swap_file_count),
+    TP_STRUCT__entry(
+        __field(unsigned long, size)
+        __field(unsigned long, vm_start)
+        __field(unsigned long, vm_end)
+        __field(bool, mutex_held)
+        __field(unsigned short, swap_file_count)
+    ),
+    TP_fast_assign(
+        __entry->size = size;
+        __entry->vm_start = vm_start;
+        __entry->vm_end = vm_end;
+        __entry->mutex_held = mutex_held;
+        __entry->swap_file_count = swap_file_count;
+    ),
+    TP_printk("size=%lu vm_start=%lu vm_end=%lu mutex_held=%d swap_file_count=%u",
+        __entry->size, __entry->vm_start, __entry->vm_end, __entry->mutex_held, __entry->swap_file_count)
+);
+
+TRACE_EVENT(mkswap_create_file_step,
+    TP_PROTO(char *step, unsigned long val1, unsigned long val2, void *ptr),
+    TP_ARGS(step, val1, val2, ptr),
+    TP_STRUCT__entry(
+        __string(step, step)
+        __field(unsigned long, val1)
+        __field(unsigned long, val2)
+        __field(unsigned long, ptr)
+    ),
+    TP_fast_assign(
+        __assign_str(step);
+        __entry->val1 = val1;
+        __entry->val2 = val2;
+        __entry->ptr = (unsigned long)ptr;
+    ),
+    TP_printk("step=%s val1=%lu val2=%lu ptr=%lx",
+        __get_str(step), __entry->val1, __entry->val2, __entry->ptr)
+);
+
+TRACE_EVENT(mkswap_create_file_alloc,
+    TP_PROTO(char *name, void *ptr, unsigned long size),
+    TP_ARGS(name, ptr, size),
+    TP_STRUCT__entry(
+        __string(name, name)
+        __field(unsigned long, ptr)
+        __field(unsigned long, size)
+    ),
+    TP_fast_assign(
+        __assign_str(name);
+        __entry->ptr = (unsigned long)ptr;
+        __entry->size = size;
+    ),
+    TP_printk("alloc=%s ptr=%lx size=%lu",
+        __get_str(name), __entry->ptr, __entry->size)
+);
+
+TRACE_EVENT(mkswap_create_file_error,
+    TP_PROTO(char *error, int ret, struct swap_info_struct *si),
+    TP_ARGS(error, ret, si),
+    TP_STRUCT__entry(
+        __string(error, error)
+        __field(int, ret)
+        __field(unsigned int, si_type)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __assign_str(error);
+        __entry->ret = ret;
+        __entry->si = (unsigned long)si;
+        __entry->si_type = si ? si->type : 0;
+    ),
+    TP_printk("error=%s ret=%d si=%lx type=%u",
+        __get_str(error), __entry->ret, __entry->si, __entry->si_type)
+);
+
+TRACE_EVENT(mkswap_create_file_success,
+    TP_PROTO(struct swap_info_struct *si, unsigned long pages, unsigned long max),
+    TP_ARGS(si, pages, max),
+    TP_STRUCT__entry(
+        __field(unsigned int, type)
+        __field(unsigned long, pages)
+        __field(unsigned long, max)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __entry->type = si->type;
+        __entry->pages = pages;
+        __entry->max = max;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("SUCCESS type=%u pages=%lu max=%lu si=%lx",
+        __entry->type, __entry->pages, __entry->max, __entry->si)
+);
+
+/* mkswap_enlarge_file trace events */
+TRACE_EVENT(mkswap_enlarge_file_entry,
+    TP_PROTO(struct swap_info_struct *si, unsigned long old_max, unsigned long old_pages, unsigned long new_size_pages),
+    TP_ARGS(si, old_max, old_pages, new_size_pages),
+    TP_STRUCT__entry(
+        __field(unsigned int, type)
+        __field(unsigned long, old_max)
+        __field(unsigned long, old_pages)
+        __field(unsigned long, new_size_pages)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __entry->type = si ? si->type : 0;
+        __entry->old_max = old_max;
+        __entry->old_pages = old_pages;
+        __entry->new_size_pages = new_size_pages;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("ENTRY si=%lx type=%u old_max=%lu old_pages=%lu new_size_pages=%lu",
+        __entry->si, __entry->type, __entry->old_max, __entry->old_pages, __entry->new_size_pages)
+);
+
+TRACE_EVENT(mkswap_enlarge_file_step,
+    TP_PROTO(char *step, unsigned long val1, unsigned long val2, int ret),
+    TP_ARGS(step, val1, val2, ret),
+    TP_STRUCT__entry(
+        __string(step, step)
+        __field(unsigned long, val1)
+        __field(unsigned long, val2)
+        __field(int, ret)
+    ),
+    TP_fast_assign(
+        __assign_str(step);
+        __entry->val1 = val1;
+        __entry->val2 = val2;
+        __entry->ret = ret;
+    ),
+    TP_printk("step=%s val1=%lu val2=%lu ret=%d",
+        __get_str(step), __entry->val1, __entry->val2, __entry->ret)
+);
+
+TRACE_EVENT(mkswap_enlarge_file_alloc,
+    TP_PROTO(char *name, void *ptr, unsigned long size),
+    TP_ARGS(name, ptr, size),
+    TP_STRUCT__entry(
+        __string(name, name)
+        __field(unsigned long, ptr)
+        __field(unsigned long, size)
+    ),
+    TP_fast_assign(
+        __assign_str(name);
+        __entry->ptr = (unsigned long)ptr;
+        __entry->size = size;
+    ),
+    TP_printk("alloc=%s ptr=%lx size=%lu",
+        __get_str(name), __entry->ptr, __entry->size)
+);
+
+TRACE_EVENT(mkswap_enlarge_file_success,
+    TP_PROTO(struct swap_info_struct *si, unsigned long new_pages, unsigned long new_max),
+    TP_ARGS(si, new_pages, new_max),
+    TP_STRUCT__entry(
+        __field(unsigned int, type)
+        __field(unsigned long, new_pages)
+        __field(unsigned long, new_max)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __entry->type = si->type;
+        __entry->new_pages = new_pages;
+        __entry->new_max = new_max;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("SUCCESS type=%u new_pages=%lu new_max=%lu si=%lx",
+        __entry->type, __entry->new_pages, __entry->new_max, __entry->si)
+);
+
+/* get_swap_pages loop trace events */
+TRACE_EVENT(get_swap_pages_loop_start,
+    TP_PROTO(int node, int n_goal, int order),
+    TP_ARGS(node, n_goal, order),
+    TP_STRUCT__entry(
+        __field(int, node)
+        __field(int, n_goal)
+        __field(int, order)
+    ),
+    TP_fast_assign(
+        __entry->node = node;
+        __entry->n_goal = n_goal;
+        __entry->order = order;
+    ),
+    TP_printk("START_OVER node=%d n_goal=%d order=%d",
+        __entry->node, __entry->n_goal, __entry->order)
+);
+
+TRACE_EVENT(get_swap_pages_loop_iter,
+    TP_PROTO(struct swap_info_struct *si, unsigned long pages, unsigned long inuse, unsigned long max, int prio),
+    TP_ARGS(si, pages, inuse, max, prio),
+    TP_STRUCT__entry(
+        __field(unsigned int, type)
+        __field(unsigned long, pages)
+        __field(unsigned long, inuse)
+        __field(unsigned long, max)
+        __field(int, prio)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __entry->type = si ? si->type : 0;
+        __entry->pages = pages;
+        __entry->inuse = inuse;
+        __entry->max = max;
+        __entry->prio = prio;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("LOOP_ITER si=%lx type=%u pages=%lu inuse=%lu max=%lu prio=%d",
+        __entry->si, __entry->type, __entry->pages, __entry->inuse, __entry->max, __entry->prio)
+);
+
+TRACE_EVENT(get_swap_pages_loop_action,
+    TP_PROTO(char *action, struct swap_info_struct *si, int val1, int val2),
+    TP_ARGS(action, si, val1, val2),
+    TP_STRUCT__entry(
+        __string(action, action)
+        __field(unsigned int, type)
+        __field(int, val1)
+        __field(int, val2)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __assign_str(action);
+        __entry->type = si ? si->type : 0;
+        __entry->val1 = val1;
+        __entry->val2 = val2;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("action=%s si=%lx type=%u val1=%d val2=%d",
+        __get_str(action), __entry->si, __entry->type, __entry->val1, __entry->val2)
+);
+
+TRACE_EVENT(get_swap_pages_enlarge,
+    TP_PROTO(struct swap_info_struct *si, unsigned long folio_index, unsigned long vm_start, unsigned long vm_end, unsigned long vma_bytes, unsigned long new_total),
+    TP_ARGS(si, folio_index, vm_start, vm_end, vma_bytes, new_total),
+    TP_STRUCT__entry(
+        __field(unsigned int, type)
+        __field(unsigned long, folio_index)
+        __field(unsigned long, vm_start)
+        __field(unsigned long, vm_end)
+        __field(unsigned long, vma_bytes)
+        __field(unsigned long, new_total)
+        __field(unsigned long, si)
+    ),
+    TP_fast_assign(
+        __entry->type = si ? si->type : 0;
+        __entry->folio_index = folio_index;
+        __entry->vm_start = vm_start;
+        __entry->vm_end = vm_end;
+        __entry->vma_bytes = vma_bytes;
+        __entry->new_total = new_total;
+        __entry->si = (unsigned long)si;
+    ),
+    TP_printk("NEED_ENLARGE si=%lx type=%u folio_index=%lu vm_start=%lu vm_end=%lu vma_bytes=%lu new_total=%lu",
+        __entry->si, __entry->type, __entry->folio_index, __entry->vm_start, __entry->vm_end, __entry->vma_bytes, __entry->new_total)
+);
+
+TRACE_EVENT(get_swap_pages_create_check,
+    TP_PROTO(unsigned long vm_start, unsigned long vm_end, bool found_existing),
+    TP_ARGS(vm_start, vm_end, found_existing),
+    TP_STRUCT__entry(
+        __field(unsigned long, vm_start)
+        __field(unsigned long, vm_end)
+        __field(bool, found_existing)
+    ),
+    TP_fast_assign(
+        __entry->vm_start = vm_start;
+        __entry->vm_end = vm_end;
+        __entry->found_existing = found_existing;
+    ),
+    TP_printk("checking for existing swap vm_start=%lu vm_end=%lu found=%d",
+        __entry->vm_start, __entry->vm_end, __entry->found_existing)
+);
+
+TRACE_EVENT(get_swap_pages_create_result,
+    TP_PROTO(unsigned long vm_start, unsigned long vm_end, unsigned long vma_size, int ret),
+    TP_ARGS(vm_start, vm_end, vma_size, ret),
+    TP_STRUCT__entry(
+        __field(unsigned long, vm_start)
+        __field(unsigned long, vm_end)
+        __field(unsigned long, vma_size)
+        __field(int, ret)
+    ),
+    TP_fast_assign(
+        __entry->vm_start = vm_start;
+        __entry->vm_end = vm_end;
+        __entry->vma_size = vma_size;
+        __entry->ret = ret;
+    ),
+    TP_printk("creating new swap file vm_start=%lu vm_end=%lu vma_size=%lu ret=%d",
+        __entry->vm_start, __entry->vm_end, __entry->vma_size, __entry->ret)
+);
+
+TRACE_EVENT(swap_end_swap_bio_write,
+	TP_PROTO(struct folio *folio),
+	TP_ARGS(folio),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+	),
+	TP_printk("folio=%p",
+		__entry->folio)
+);
+
+TRACE_EVENT(swap_folio_rotate_reclaimable,
+    TP_PROTO(struct folio *folio, bool locked, bool dirty, bool unevictable),
+    TP_ARGS(folio, locked, dirty, unevictable),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+        __field(bool, locked)
+        __field(bool, dirty)
+        __field(bool, unevictable)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+        __entry->locked = locked;
+        __entry->dirty = dirty;
+        __entry->unevictable = unevictable;
+    ),
+    TP_printk("folio=%p locked=%d dirty=%d unevictable=%d",
+        __entry->folio, __entry->locked, __entry->dirty, __entry->unevictable)
+);
+TRACE_EVENT(swap_lru_gen_add,
+	TP_PROTO(struct folio *folio, int gen, int type, int zone, bool active, bool unevictable, bool swapcache, bool reclaim, bool dirty, bool writeback),
+	TP_ARGS(folio, gen, type, zone, active, unevictable, swapcache, reclaim, dirty, writeback),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, gen)
+		__field(int, type)
+		__field(int, zone)
+		__field(bool, active)
+		__field(bool, unevictable)
+		__field(bool, swapcache)
+		__field(bool, reclaim)
+		__field(bool, dirty)
+		__field(bool, writeback)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->gen = gen;
+		__entry->type = type;
+		__entry->zone = zone;
+		__entry->active = active;
+		__entry->unevictable = unevictable;
+		__entry->swapcache = swapcache;
+		__entry->reclaim = reclaim;
+		__entry->dirty = dirty;
+		__entry->writeback = writeback;
+	),
+	TP_printk("folio=%p gen=%d type=%d zone=%d active=%d unevictable=%d swapcache=%d reclaim=%d dirty=%d writeback=%d",
+		__entry->folio,
+		__entry->gen,
+		__entry->type,
+		__entry->zone,
+		__entry->active,
+		__entry->unevictable,
+		__entry->swapcache,
+		__entry->reclaim,
+		__entry->dirty,
+		__entry->writeback)
+);
+TRACE_EVENT(swap_folio_batch_add_and_move,
+    TP_PROTO(struct folio *folio, bool on_lru, bool disable_irq),
+    TP_ARGS(folio, on_lru, disable_irq),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+        __field(bool, on_lru)
+        __field(bool, disable_irq)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+        __entry->on_lru = on_lru;
+        __entry->disable_irq = disable_irq;
+    ),
+    TP_printk("folio=%p on_lru=%d disable_irq=%d",
+        __entry->folio, __entry->on_lru, __entry->disable_irq)
+); 
+
+TRACE_EVENT(swap_lru_move_tail,
+    TP_PROTO(struct folio *folio, bool active, bool reclaim, bool dirty, bool writeback, bool swapcache, unsigned long min_seq, unsigned int min_nr_gens, unsigned long max_seq),
+    TP_ARGS(folio, active, reclaim, dirty, writeback, swapcache, min_seq, min_nr_gens, max_seq),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+        __field(bool, active)
+        __field(bool, reclaim)
+        __field(bool, dirty)
+        __field(bool, writeback)
+        __field(bool, swapcache)
+        __field(unsigned long, min_seq)
+        __field(unsigned int, min_nr_gens)
+        __field(unsigned long, max_seq)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+        __entry->active = active;
+        __entry->reclaim = reclaim;
+        __entry->dirty = dirty;
+        __entry->writeback = writeback;
+        __entry->swapcache = swapcache;
+        __entry->min_seq = min_seq;
+        __entry->min_nr_gens = min_nr_gens;
+        __entry->max_seq = max_seq;
+    ),
+    TP_printk("folio=%p active=%d reclaim=%d dirty=%d writeback=%d swapcache=%d min_seq=%lu min_nr_gens=%u max_seq=%lu",
+        __entry->folio, __entry->active, __entry->reclaim, __entry->dirty, __entry->writeback, __entry->swapcache, __entry->min_seq, __entry->min_nr_gens, __entry->max_seq)
+);
+TRACE_EVENT(swap_writepage_bdev_async,
+    TP_PROTO(struct folio *folio),
+    TP_ARGS(folio),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+    ),
+    TP_printk("folio=%p",
+        __entry->folio)
+);
+TRACE_EVENT(swap_writepage_bdev_sync,
+    TP_PROTO(struct folio *folio),
+    TP_ARGS(folio),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+    ),
+    TP_printk("folio=%p",
+        __entry->folio)
+);
+TRACE_EVENT(swap_writepage,
+    TP_PROTO(struct folio *folio, bool fs_ops, bool synchronous, bool synchronous_write),
+    TP_ARGS(folio, fs_ops, synchronous, synchronous_write),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+        __field(bool, fs_ops)
+        __field(bool, synchronous)
+        __field(bool, synchronous_write)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+        __entry->fs_ops = fs_ops;
+        __entry->synchronous = synchronous;
+        __entry->synchronous_write = synchronous_write;
+    ),
+    TP_printk("folio=%p fs_ops=%d synchronous=%d synchronous_write=%d",
+        __entry->folio, __entry->fs_ops, __entry->synchronous, __entry->synchronous_write)
 );
 #endif /* _TRACE_SWAP_H */
 

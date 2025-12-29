@@ -1534,9 +1534,9 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, pg
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_anon_no_yield(folio, &rwc, true);
+		rmap_walk_locked(folio, &rwc);
 	else
-		rmap_walk_anon_no_yield(folio, &rwc, false);
+		rmap_walk(folio, &rwc);
 	*folio_index = data.index;
 	trace_get_swap_info_from_folio(folio, data.si, *folio_index);
 	*vm_start = data.vm_start;
@@ -1629,8 +1629,27 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 			put_swap_device(si);
 			#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 			if (folio_index > si->max){
-				// printk(KERN_INFO "%s:%s:%d [CPU:%d] enlarging swap file. folio_index=%lu si_max=%lu vm_start=%lu vm_end=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),folio_index,si->max,vm_start,vm_end);
-				int ret = mkswap_enlarge_file(si, vm_end - vm_start);
+				trace_get_swap_pages_enlarge(si, folio_index, vm_start, vm_end, 0, si->max);
+				/* Convert VMA size from bytes to pages, then add 1 for header */
+				/* This matches mkswap_create_file which uses vma_size + PAGE_SIZE */
+				unsigned long vma_size_bytes = vm_end - vm_start;
+				unsigned long vma_size_pages = (vma_size_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+				/* Total pages needed: VMA pages + 1 header page */
+				unsigned long new_total_pages = vma_size_pages + 1;
+				trace_get_swap_pages_enlarge(si, folio_index, vm_start, vm_end, vma_size_bytes, new_total_pages);
+				/* Only enlarge if the requested size is larger than current */
+				if (new_total_pages > si->max) {
+					trace_get_swap_pages_loop_action("calling mkswap_enlarge_file", si, 0, new_total_pages);
+					int ret = mkswap_enlarge_file(si, new_total_pages);
+					trace_get_swap_pages_loop_action("mkswap_enlarge_file returned", si, ret, si->max);
+					if (ret < 0) {
+						trace_get_swap_pages_loop_action("ERROR enlarge failed", si, ret, 0);
+						pr_warn("mkswap: failed to enlarge swap file: %d (vma_size=%lu bytes, %lu pages, new_total=%lu pages, current_max=%lu)\n",
+							ret, vma_size_bytes, vma_size_pages, new_total_pages, si->max);
+					} else {
+						trace_get_swap_pages_loop_action("enlarge SUCCESS", si, si->max, 0);
+					}
+				}
 			}
 			#endif
 			if (n_ret || size > 1)
@@ -1644,6 +1663,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 		struct swap_info_struct *existing_si = NULL;
 		bool found_existing = false;
 		
+		trace_get_swap_pages_create_check(vm_start, vm_end, false);
 		/* First check: quick check with swap_lock */
 		spin_lock(&swap_lock);
 		plist_for_each_entry(existing_si, &swap_active_head, list) {
@@ -1653,8 +1673,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 				/* Found existing swap for this VMA - use it */
 				found_existing = true;
 				spin_unlock(&swap_lock);
-				// printk(KERN_INFO "found existing swap for VMA. vm_start=%lu vm_end=%lu type=%d nr_vmas=%d\n",
-				    //    vm_start, vm_end, existing_si->type, existing_si->nr_vmas);
+				trace_get_swap_pages_create_check(vm_start, vm_end, true);
 				/* Continue with normal allocation path - the existing si will be found there */
 				goto skip_create;
 			}
@@ -1662,8 +1681,10 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 		spin_unlock(&swap_lock);
 		
 		if (!found_existing) {
+			trace_get_swap_pages_loop_action("no existing swap, locking swapon_mutex", NULL, 0, 0);
 			/* Serialize swap file creation with swapon_mutex to prevent duplicates */
 			mutex_lock(&swapon_mutex);
+			trace_get_swap_pages_loop_action("acquired swapon_mutex", NULL, 0, 0);
 			
 			/* Double-check: another thread might have created it while we waited for mutex */
 			spin_lock(&swap_lock);
@@ -1674,8 +1695,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 					found_existing = true;
 					spin_unlock(&swap_lock);
 					mutex_unlock(&swapon_mutex);
-					// printk(KERN_INFO "found existing swap for VMA (double-check). vm_start=%lu vm_end=%lu type=%d\n",
-					    //    vm_start, vm_end, existing_si->type);
+					trace_get_swap_pages_create_check(vm_start, vm_end, true);
 					goto skip_create;
 				}
 			}
@@ -1685,7 +1705,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 				unsigned long vma_size = (vm_end - vm_start);
 				char swap_path[256] = ""; /* Not used for virtual swap, kept for compatibility */
 				
-				// printk(KERN_INFO "creating virtual swap. vma_size=%lu vm_start=%lu vm_end=%lu\n",vma_size,vm_start,vm_end);
+				trace_get_swap_pages_create_result(vm_start, vm_end, vma_size, -1);
 				/* mkswap_create_file will acquire swapon_mutex again around enable_swap_info,
 				 * but we already hold it, so we need to handle nested locking or restructure.
 				 * For now, we'll release it before calling and let mkswap_create_file handle it.
@@ -1694,16 +1714,19 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 				int ret = mkswap_create_file(vma_size + PAGE_SIZE, swap_path, sizeof(swap_path),
 							     vm_start, vm_end, true);
 				mutex_unlock(&swapon_mutex);
+				trace_get_swap_pages_create_result(vm_start, vm_end, vma_size, ret);
 				if (ret < 0) {
+					trace_get_swap_pages_loop_action("ERROR swap creation failed", NULL, ret, 0);
 					pr_err("mkswap: failed to create and activate virtual swap: %d\n", ret);
 					return ret;
 				}
-				// pr_info("mkswap: virtual swap created and activated successfully\n");
 			} else {
 				mutex_unlock(&swapon_mutex);
+				trace_get_swap_pages_loop_action("found existing swap in double-check", NULL, 0, 0);
 			}
 		}
 skip_create:
+		trace_get_swap_pages_loop_action("skip_create path", NULL, 0, 0);
 	}
 	#endif
 	#endif
@@ -1723,15 +1746,21 @@ skip_create:
 start_over:
 	node = numa_node_id();
 	bool skip_si = false;
+	trace_get_swap_pages_loop_start(node, n_goal, order);
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
+		trace_get_swap_pages_loop_iter(si, si->pages, swap_usage_in_pages(si), si->max, si->prio);
 		#ifdef CONFIG_SWAP_VMA
-		if (si->nr_vmas > 0)
+		if (si->nr_vmas > 0) {
+			trace_get_swap_pages_loop_action("SKIP nr_vmas>0", si, si->nr_vmas, 0);
 			continue;
+		}
 retry_set_swap_info:
 		struct swap_info_struct *actual_si = NULL;
+		trace_get_swap_pages_loop_action("calling set_swap_info_for_folio", si, 0, 0);
 		int set_swap_status = set_swap_info_for_folio(folio, si, &folio_index, &skip_si, &vm_start, &vm_end, &actual_si);
+		trace_get_swap_pages_loop_action("set_swap_info_for_folio returned", si, set_swap_status, skip_si);
 		
 		/* Handle return values:
 		 * -1: Lock contention, retry after releasing spinlock briefly
@@ -1739,6 +1768,7 @@ retry_set_swap_info:
 		 *  1: Successfully got swap info
 		 */
 		if (set_swap_status == -1) {
+			trace_get_swap_pages_loop_action("RETRY lock contention", si, 0, 0);
 			/* Lock was contended, release spinlock and retry */
 			spin_unlock(&swap_avail_lock);
 			cpu_relax();
@@ -1750,26 +1780,33 @@ retry_set_swap_info:
 		}
 		
 		if (set_swap_status == 0) {
+			trace_get_swap_pages_loop_action("SKIP no VMA found", si, 0, 0);
 			/* No VMA found for this folio */
 			continue;
 		}
 		
 		/* set_swap_status == 1: Successfully retrieved swap info */
-		if (skip_si)
+		if (skip_si) {
+			trace_get_swap_pages_loop_action("SKIP skip_si=true", si, 0, 0);
 			continue;
+		}
 		if (si == actual_si){
 			si->nr_vmas++;
 			si->vm_start = vm_start;
 			si->vm_end = vm_end;
 			BUG_ON(!vm_start || !vm_end);
+			trace_get_swap_pages_loop_action("set si info", si, si->nr_vmas, vm_start);
 		}
 		else{
 			si = actual_si;
+			trace_get_swap_pages_loop_action("switched to actual_si", actual_si, actual_si ? actual_si->type : -1, 0);
 		}
 		#endif
 		spin_unlock(&swap_avail_lock);
+		trace_get_swap_pages_loop_action("trying get_swap_device_info", si, si->type, 0);
 		if (get_swap_device_info(si)) {
 			lockdep_assert_not_held(&si->lock);
+			trace_get_swap_pages_loop_action("got swap device info, calling scan_swap_map_slots", si, 0, 0);
 			#ifndef CONFIG_SWAP_VMA
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order);
@@ -1777,6 +1814,7 @@ retry_set_swap_info:
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order, folio_index);
 			#endif
+			trace_get_swap_pages_loop_action("scan_swap_map_slots returned", si, n_ret, 0);
 			put_swap_device(si);
 			if (n_ret || size > 1)
 				goto check_out;
@@ -1784,6 +1822,7 @@ retry_set_swap_info:
 		#ifdef CONFIG_SWAP_VMA
 		else
 		{
+			trace_get_swap_pages_loop_action("ERROR failed getting swap info", si, 0, 0);
 			printk(KERN_INFO "%s:%s:%d [CPU:%d] failed getting swap info. BUG si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
 		}
 		#endif
@@ -1799,17 +1838,23 @@ retry_set_swap_info:
 		 * still in the swap_avail_head list then try it, otherwise
 		 * start over if we have not gotten any slots.
 		 */
-		if (plist_node_empty(&next->avail_lists[node]))
+		trace_get_swap_pages_loop_action("checking if next is empty", next, 0, 0);
+		if (plist_node_empty(&next->avail_lists[node])) {
+			trace_get_swap_pages_loop_action("next is empty, starting over", NULL, 0, 0);
 			goto start_over;
+		}
 	}
 
 	spin_unlock(&swap_avail_lock);
+	trace_get_swap_pages_loop_action("LOOP_END no swap found", NULL, 0, 0);
 
 check_out:
+	trace_get_swap_pages_loop_action("CHECK_OUT", si, n_ret, n_goal);
 	if (n_ret < n_goal)
 		atomic_long_add((long)(n_goal - n_ret) * size,
 				&nr_swap_pages);
 noswap:
+	trace_get_swap_pages_loop_action("EXIT", si, n_ret, 0);
 	trace_get_swap_pages(n_ret, si, swp_offset(swp_entries[0]),swp_type(swp_entries[0]));
 	return n_ret;
 }
@@ -3257,16 +3302,20 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 	int ret = 0;
 	unsigned int nofs_flags = 0;
 
+	trace_mkswap_create_file_entry(size, vm_start, vm_end, swapon_mutex_held, swap_file_count);
+
 	BUG_ON(swap_file_count + 1 >= MAX_SWAPFILES);
 
 	/* Validate size - need at least 2 pages: 1 header + 1 swap page */
 	if (size < 2 * PAGE_SIZE) {
+		trace_mkswap_create_file_error("size too small", -EINVAL, NULL);
 		pr_err("mkswap: size too small %lu bytes (minimum %lu bytes = 1 header + 1 swap page)\n",
 		       size, 2 * PAGE_SIZE);
 		return -EINVAL;
 	}
 
 	if (!swap_avail_heads) {
+		trace_mkswap_create_file_error("swap system not initialized", -ENOMEM, NULL);
 		pr_err("mkswap: swap system not initialized\n");
 		return -ENOMEM;
 	}
@@ -3274,6 +3323,7 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 	/* Calculate number of pages */
 	npages = size / PAGE_SIZE;
 	maxpages = npages;
+	trace_mkswap_create_file_step("calculated", npages, maxpages, NULL);
 
 	/* Generate unique filepath based on timestamp */
 	ktime_get_real_ts64(&ts);
@@ -3288,25 +3338,32 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 
 	/* Enter NOFS scope early to prevent filesystem recursion during allocations */
 	nofs_flags = memalloc_nofs_save();
+	trace_mkswap_create_file_step("entered NOFS scope", 0, 0, NULL);
 
 	/* Allocate swap_info_struct */
+	trace_mkswap_create_file_step("allocating swap_info_struct", 0, 0, NULL);
 	si = alloc_swap_info();
 	if (IS_ERR(si)) {
 		ret = PTR_ERR(si);
 		memalloc_nofs_restore(nofs_flags);
+		trace_mkswap_create_file_error("alloc_swap_info failed", ret, NULL);
 		pr_err("mkswap: failed to allocate swap_info_struct: %d\n", ret);
 		return ret;
 	}
+	trace_mkswap_create_file_alloc("swap_info_struct", si, 0);
 
 	INIT_WORK(&si->discard_work, swap_discard_work);
 	INIT_WORK(&si->reclaim_work, swap_reclaim_work);
 
 	/* Allocate buffer for swap header (in memory only, not written to disk) */
+	trace_mkswap_create_file_step("allocating header buffer", PAGE_SIZE, 0, NULL);
 	buf = kzalloc(PAGE_SIZE, GFP_NOFS);
 	if (!buf) {
 		ret = -ENOMEM;
+		trace_mkswap_create_file_error("header buffer allocation failed", ret, si);
 		goto bad_swap;
 	}
+	trace_mkswap_create_file_alloc("header buffer", buf, PAGE_SIZE);
 
 	header = (union swap_header *)buf;
 
@@ -3325,18 +3382,22 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 	memcpy(buf + PAGE_SIZE - 10, "SWAPSPACE2", 10);
 
 	/* Create and allocate the backing file */
-	
+	trace_mkswap_create_file_step("opening file", 0, 0, NULL);
 	file = filp_open(filepath, O_RDWR | O_CREAT | O_TRUNC | O_LARGEFILE, 0600);
 	if (IS_ERR(file)) {
 		ret = PTR_ERR(file);
 		memalloc_nofs_restore(nofs_flags);
+		trace_mkswap_create_file_error("filp_open failed", ret, si);
 		pr_err("mkswap: failed to open/create file %s: %d\n", 
 		       filepath, ret);
 		goto bad_swap;
 	}
+	trace_mkswap_create_file_alloc("file", file, 0);
 
 	/* Pre-allocate space using fallocate */
+	trace_mkswap_create_file_step("fallocating", size, 0, NULL);
 	ret = vfs_fallocate(file, 0, 0, size);
+	trace_mkswap_create_file_step("fallocate returned", ret, 0, NULL);
 	if (ret < 0) {
 		pr_err("mkswap: fallocate failed for %s (size=%lu): %d\n",
 			filepath, size, ret);
@@ -3367,31 +3428,40 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 		struct inode *inode = mapping->host;
 		struct dentry *dentry = file->f_path.dentry;
 
+		trace_mkswap_create_file_step("claiming swapfile", 0, 0, inode);
 		ret = claim_swapfile(si, inode);
 		if (unlikely(ret)) {
+			trace_mkswap_create_file_error("claim_swapfile failed", ret, si);
 			pr_err("mkswap: claim_swapfile failed: %d\n", ret);
 			goto bad_swap;
 		}
+		trace_mkswap_create_file_step("claimed swapfile", 0, 0, NULL);
 
+		trace_mkswap_create_file_step("locking inode", 0, 0, NULL);
 		inode_lock(inode);
 		if (d_unlinked(dentry) || cant_mount(dentry)) {
 			ret = -ENOENT;
+			trace_mkswap_create_file_error("dentry unlinked or cant_mount", ret, si);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
 		if (IS_SWAPFILE(inode)) {
 			ret = -EBUSY;
+			trace_mkswap_create_file_error("inode is already swapfile", ret, si);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
 
 		/* Allocate swap_map */
+		trace_mkswap_create_file_step("allocating swap_map", maxpages, maxpages * sizeof(unsigned char), NULL);
 		swap_map = vzalloc(maxpages);
 		if (!swap_map) {
 			ret = -ENOMEM;
+			trace_mkswap_create_file_error("swap_map allocation failed", ret, si);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
+		trace_mkswap_create_file_alloc("swap_map", swap_map, maxpages);
 
 		/* Set up swap map and extents using the file */
 		{
@@ -3425,30 +3495,39 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 		}
 
 		/* Initialize swap cgroup */
+		trace_mkswap_create_file_step("initializing swap cgroup", si->type, maxpages, NULL);
 		ret = swap_cgroup_swapon(si->type, maxpages);
 		if (ret) {
+			trace_mkswap_create_file_error("swap_cgroup_swapon failed", ret, si);
 			pr_err("mkswap: swap_cgroup_swapon failed: %d\n", ret);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
+		trace_mkswap_create_file_step("swap cgroup initialized", 0, 0, NULL);
 
 		/* Allocate zeromap */
+		trace_mkswap_create_file_step("allocating zeromap", maxpages, BITS_TO_LONGS(maxpages), NULL);
 		zeromap = kvmalloc_array(BITS_TO_LONGS(maxpages), sizeof(long),
 					 GFP_NOFS | __GFP_ZERO);
 		if (!zeromap) {
 			ret = -ENOMEM;
+			trace_mkswap_create_file_error("zeromap allocation failed", ret, si);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
+		trace_mkswap_create_file_alloc("zeromap", zeromap, BITS_TO_LONGS(maxpages) * sizeof(long));
 
 		/* Setup cluster_info */
+		trace_mkswap_create_file_step("setting up clusters", maxpages, 0, NULL);
 		cluster_info = setup_clusters(si, header, maxpages);
 		if (IS_ERR(cluster_info)) {
 			ret = PTR_ERR(cluster_info);
 			cluster_info = NULL;
+			trace_mkswap_create_file_error("setup_clusters failed", ret, si);
 			inode_unlock(inode);
 			goto bad_swap;
 		}
+		trace_mkswap_create_file_alloc("cluster_info", cluster_info, 0);
 
 		/* Mark inode as swapfile and drain writes */
 		inode->i_flags |= S_SWAPFILE;
@@ -3464,33 +3543,42 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 
 	/* Keep NOFS scope active for swap address space initialization */
 	/* Initialize swap address space */
+	trace_mkswap_create_file_step("initializing swap address space", si->type, maxpages, NULL);
 	ret = init_swap_address_space(si->type, maxpages);
 	if (ret) {
+		trace_mkswap_create_file_error("init_swap_address_space failed", ret, si);
 		pr_err("mkswap: init_swap_address_space failed: %d\n", ret);
 		goto bad_swap;
 	}
+	trace_mkswap_create_file_step("swap address space initialized", 0, 0, NULL);
 
 	/* Initialize zswap */
+	trace_mkswap_create_file_step("initializing zswap", si->type, maxpages, NULL);
 	ret = zswap_swapon(si->type, maxpages);
 	if (ret) {
+		trace_mkswap_create_file_error("zswap_swapon failed", ret, si);
 		pr_err("mkswap: zswap_swapon failed: %d\n", ret);
 		goto bad_swap;
 	}
+	trace_mkswap_create_file_step("zswap initialized", 0, 0, NULL);
 
 	/* Set VMA range before enabling swap so duplicates can be detected */
 	#ifdef CONFIG_SWAP_VMA
 	if (vm_start && vm_end) {
 		si->vm_start = vm_start;
 		si->vm_end = vm_end;
+		trace_mkswap_create_file_step("set VMA range", vm_start, vm_end, NULL);
 	}
 	#endif
 
 	/* Enable the swap with cluster_info and zswap initialized */
+	trace_mkswap_create_file_step("enabling swap info", swapon_mutex_held, prio, NULL);
 	if (!swapon_mutex_held)
 		mutex_lock(&swapon_mutex);
 	enable_swap_info(si, prio, swap_map, cluster_info, zeromap);
 	if (!swapon_mutex_held)
 		mutex_unlock(&swapon_mutex);
+	trace_mkswap_create_file_step("swap enabled", si->pages, si->max, NULL);
 
 	/* Restore NOFS scope after all filesystem operations are complete */
 	memalloc_nofs_restore(nofs_flags);
@@ -3511,12 +3599,15 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 
 	swap_file_count++;
 	kfree(buf);
+	trace_mkswap_create_file_success(si, si->pages, si->max);
 	return 0;
 
 bad_swap:
+	trace_mkswap_create_file_error("error path", ret, si);
 	/* Restore NOFS scope if we entered it */
 	if (nofs_flags) {
 		memalloc_nofs_restore(nofs_flags);
+		trace_mkswap_create_file_step("restored NOFS scope", 0, 0, NULL);
 	}
 
 	/* Clean up swap address space if initialized */
@@ -3568,10 +3659,14 @@ static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_si
 	unsigned long old_pages;
 	unsigned int current_last_page, new_last_page;
 
+	trace_mkswap_enlarge_file_entry(si, si ? si->max : 0, si ? si->pages : 0, new_size_pages);
+
 	/* Validate parameters */
-	if (new_size_pages == 0 || new_size_pages <= si->pages) {
-		pr_err("mkswap: invalid new_size %lu (current: %u)\n",
-		       new_size_pages, si->pages);
+	/* new_size_pages is total pages including header, si->max is also total pages */
+	if (new_size_pages == 0 || new_size_pages <= si->max) {
+		trace_mkswap_enlarge_file_step("ERROR invalid size", new_size_pages, si->max, -EINVAL);
+		pr_err("mkswap: invalid new_size %lu (current max: %u, current pages: %u)\n",
+		       new_size_pages, si->max, si->pages);
 		return -EINVAL;
 	}
 
@@ -3586,16 +3681,23 @@ static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_si
 	current_size_bytes = i_size_read(file_inode(file));
 	new_size_bytes = new_size_pages * PAGE_SIZE;
 	old_pages = si->pages;
+	trace_mkswap_enlarge_file_step("sizes", current_size_bytes, new_size_bytes, 0);
 
 	/* Allocate buffer for swap header page */
+	trace_mkswap_enlarge_file_step("allocating header buffer", PAGE_SIZE, 0, 0);
 	buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		trace_mkswap_enlarge_file_step("ERROR header buffer allocation failed", 0, 0, -ENOMEM);
 		return -ENOMEM;
+	}
+	trace_mkswap_enlarge_file_alloc("header buffer", buf, PAGE_SIZE);
 
 	/* Read the full first page to get the header and signature */
+	trace_mkswap_enlarge_file_step("reading header from file", 0, 0, 0);
 	pos = 0;
 	read_len = PAGE_SIZE;
 	ret = kernel_read(file, buf, read_len, &pos);
+	trace_mkswap_enlarge_file_step("kernel_read returned", ret, 0, 0);
 	if (ret < 0) {
 		pr_err("mkswap: failed to read header: %d\n", ret);
 		goto out_free;
@@ -3625,13 +3727,17 @@ static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_si
 
 	current_last_page = header->info.last_page;
 	new_last_page = new_size_pages - 1;
+	trace_mkswap_enlarge_file_step("pages", current_last_page, new_last_page, 0);
 
 	pr_info("mkswap: enlarging swap file from %u to %lu pages (last_page: %u -> %u)\n",
 		si->pages, new_size_pages, current_last_page + 1, new_last_page + 1);
 
 	/* Enlarge the file using fallocate */
+	trace_mkswap_enlarge_file_step("fallocating", new_size_bytes - current_size_bytes, 0, 0);
 	ret = vfs_fallocate(file, 0, current_size_bytes, new_size_bytes - current_size_bytes);
+	trace_mkswap_enlarge_file_step("fallocate returned", ret, 0, 0);
 	if (ret < 0) {
+		trace_mkswap_enlarge_file_step("ERROR fallocate failed", ret, 0, 0);
 		pr_err("mkswap: fallocate failed to enlarge file: %d\n", ret);
 		goto out_free;
 	}
@@ -3666,14 +3772,19 @@ static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_si
 
 	/* Update swap_info_struct - allocate new swap_map and zeromap */
 	{
+		trace_mkswap_enlarge_file_step("allocating new swap_map", new_size_pages, 0, 0);
 		unsigned char *new_swap_map = vzalloc(new_size_pages);
+		trace_mkswap_enlarge_file_alloc("swap_map", new_swap_map, new_size_pages);
+		trace_mkswap_enlarge_file_step("allocating new zeromap", BITS_TO_LONGS(new_size_pages), 0, 0);
 		unsigned long *new_zeromap = kvmalloc_array(BITS_TO_LONGS(new_size_pages),
 							     sizeof(long),
 							     GFP_KERNEL | __GFP_ZERO);
+		trace_mkswap_enlarge_file_alloc("zeromap", new_zeromap, BITS_TO_LONGS(new_size_pages) * sizeof(long));
 		if (!new_swap_map || !new_zeromap) {
 			vfree(new_swap_map);
 			kvfree(new_zeromap);
 			ret = -ENOMEM;
+			trace_mkswap_enlarge_file_step("ERROR map allocation failed", new_size_pages, 0, ret);
 			goto out_free;
 		}
 
@@ -3689,23 +3800,132 @@ static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_si
 		si->swap_map = new_swap_map;
 		si->zeromap = new_zeromap;
 		
+		/* Resize cluster_info if it exists */
+		if (si->cluster_info) {
+			unsigned long old_nr_clusters = DIV_ROUND_UP(old_pages + 1, SWAPFILE_CLUSTER);
+			unsigned long new_nr_clusters = DIV_ROUND_UP(new_size_pages, SWAPFILE_CLUSTER);
+			struct swap_cluster_info *new_cluster_info;
+			trace_mkswap_enlarge_file_step("resizing cluster_info", old_nr_clusters, new_nr_clusters, 0);
+			
+			if (new_nr_clusters > old_nr_clusters) {
+				unsigned long i;
+				gfp_t gfp_flags = current_gfp_context(GFP_KERNEL);
+				
+				trace_mkswap_enlarge_file_step("allocating new cluster_info", new_nr_clusters, 0, 0);
+				new_cluster_info = kvcalloc(new_nr_clusters, sizeof(*new_cluster_info), gfp_flags);
+				trace_mkswap_enlarge_file_alloc("cluster_info", new_cluster_info, new_nr_clusters * sizeof(*new_cluster_info));
+				if (!new_cluster_info) {
+					trace_mkswap_enlarge_file_step("ERROR cluster_info allocation failed", 0, 0, -ENOMEM);
+					pr_err("mkswap: failed to allocate new cluster_info\n");
+					ret = -ENOMEM;
+					goto out_free;
+				}
+				
+				/* Copy old cluster_info */
+				memcpy(new_cluster_info, si->cluster_info,
+				       old_nr_clusters * sizeof(*si->cluster_info));
+				
+				/* Initialize new clusters */
+				for (i = old_nr_clusters; i < new_nr_clusters; i++)
+					spin_lock_init(&new_cluster_info[i].lock);
+				
+				/* Free old and set new */
+				kvfree(si->cluster_info);
+				si->cluster_info = new_cluster_info;
+				
+				pr_info("mkswap: resized cluster_info from %lu to %lu clusters\n",
+					old_nr_clusters, new_nr_clusters);
+			}
+		}
+		
+		/* Update swap extents for the new pages */
+		{
+			struct address_space *mapping = file->f_mapping;
+			struct inode *inode = mapping->host;
+			unsigned blkbits = inode->i_blkbits;
+			unsigned blocks_per_page = PAGE_SIZE >> blkbits;
+			/* Page indices: 0=header, 1..old_pages=old usable, (old_pages+1)..(new_size_pages-1)=new usable */
+			unsigned long first_new_page = old_pages + 1; /* First new usable page index */
+			unsigned long nr_new_pages = new_size_pages - old_pages - 1; /* Number of new usable pages */
+			sector_t probe_block;
+			sector_t first_block;
+			unsigned block_in_page;
+			
+			if (nr_new_pages == 0) {
+				pr_warn("mkswap: no new pages to add to extents\n");
+			} else {
+				/* Find the disk block for the first new page */
+				probe_block = (first_new_page * PAGE_SIZE) >> blkbits;
+				first_block = probe_block;
+				ret = bmap(inode, &first_block);
+				if (ret || !first_block) {
+					pr_err("mkswap: bmap failed for first new page (page %lu): %d\n",
+					       first_new_page, ret);
+					ret = -EINVAL;
+					goto out_free;
+				}
+				
+				/* Verify PAGE_SIZE alignment */
+				if (first_block & (blocks_per_page - 1)) {
+					pr_err("mkswap: first new block not PAGE_SIZE aligned (block %llu)\n",
+					       (unsigned long long)first_block);
+					ret = -EINVAL;
+					goto out_free;
+				}
+				
+				/* Verify contiguity for the first page */
+				for (block_in_page = 1; block_in_page < blocks_per_page; block_in_page++) {
+					sector_t block = probe_block + block_in_page;
+					ret = bmap(inode, &block);
+					if (ret || !block || block != first_block + block_in_page) {
+						pr_err("mkswap: new pages are not contiguous at page %lu\n",
+						       first_new_page);
+						ret = -EINVAL;
+						goto out_free;
+					}
+				}
+				
+				/* Convert to page-sized blocks (sectors per page) */
+				first_block >>= (PAGE_SHIFT - blkbits);
+				
+				/* Add a single extent for all new pages (fallocate creates contiguous blocks) */
+				ret = add_swap_extent(si, first_new_page, nr_new_pages, first_block);
+				if (ret < 0) {
+					pr_err("mkswap: failed to add swap extent for %lu pages: %d\n",
+					       nr_new_pages, ret);
+					goto out_free;
+				}
+				
+				pr_info("mkswap: added swap extent: pages %lu-%lu, blocks starting at %llu\n",
+					first_new_page, first_new_page + nr_new_pages - 1,
+					(unsigned long long)first_block);
+			}
+		}
+		
 		/* Update global swap accounting */
 		{
-			unsigned long pages_added = new_size_pages - old_pages;
+			/* si->pages is the number of usable pages (excluding header) */
+			/* si->max is the total page count (exclusive upper bound for page indices) */
+			unsigned long new_usable_pages = new_size_pages - 1; /* Exclude header */
+			unsigned long pages_added = new_usable_pages - old_pages;
+			trace_mkswap_enlarge_file_step("updating swap accounting", pages_added, 0, 0);
 			spin_lock(&swap_lock);
-			si->pages = new_size_pages;
-			si->max = new_last_page;
+			si->pages = new_usable_pages;
+			si->max = new_size_pages; /* Total pages including header */
 			atomic_long_add(pages_added, &nr_swap_pages);
 			total_swap_pages += pages_added;
 			spin_unlock(&swap_lock);
+			trace_mkswap_enlarge_file_step("updated", si->pages, si->max, 0);
 		}
 	}
 
 	pr_info("mkswap: swap file enlarged successfully (new pages=%lu, new last_page=%u)\n",
 		new_size_pages, new_last_page);
+	trace_mkswap_enlarge_file_success(si, new_size_pages, si->max);
 	ret = 0;
 
 out_free:
+	trace_mkswap_enlarge_file_step("EXIT", ret, 0, 0);
 	kfree(buf);
 	return ret;
 }

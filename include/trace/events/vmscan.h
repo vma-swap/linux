@@ -553,41 +553,6 @@ TRACE_EVENT(mm_vmscan_isolate_folio,
 	)
 );
 #ifdef CONFIG_VMA_RECLAIM
-TRACE_EVENT(mm_vmscan_scan_folios,
-
-	TP_PROTO(struct folio *folio, struct folio *prev_folio, int is_seq, unsigned int vma_reclimation, int zone, int type, int gen, unsigned int seq_hits),
-	TP_ARGS(folio, prev_folio, is_seq, vma_reclimation, zone, type, gen, seq_hits),
-	TP_STRUCT__entry(
-		    __field(struct folio *, folio)
-			__field(struct folio *, prev_folio)
-			__field(int, is_seq)
-		    __field(unsigned int, vma_reclimation)
-		    __field(int, zone)
-		    __field(int, type)
-		    __field(int, gen)
-			__field(unsigned int, seq_hits)
-	),
-	TP_fast_assign(
-		__entry->folio = folio;
-		__entry->prev_folio = prev_folio;
-		__entry->is_seq = is_seq;
-		__entry->vma_reclimation = vma_reclimation;
-		__entry->zone = zone;
-		__entry->type = type;
-		__entry->gen = gen;
-		__entry->seq_hits = seq_hits;
-	),
-	TP_printk("folio=%p prev_folio=%p is_seq=%d vma_reclimation=%u zone=%d type=%d gen=%d seq_hits=%d",
-		__entry->folio,
-		__entry->prev_folio,
-		__entry->is_seq,
-		__entry->vma_reclimation,
-		__entry->zone,
-		__entry->type,
-		__entry->gen,
-		__entry->seq_hits
-	)
-);
 TRACE_EVENT(mm_vmscan_get_next_folio,
 	TP_PROTO(struct folio *folio, unsigned long addr, struct vm_area_struct *vma, int is_anon, int is_file, int has_mapping),
 	TP_ARGS(folio, addr, vma, is_anon, is_file, has_mapping),
@@ -643,15 +608,21 @@ TRACE_EVENT(mm_vmscan_get_prev_folio,
 		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_get_first_folio_in_seq,
-	TP_PROTO(struct folio *folio),
-	TP_ARGS(folio),
+	TP_PROTO(struct folio *folio, bool do_break, unsigned long go_back_size, unsigned long distance_from_vma_start),
+	TP_ARGS(folio, do_break, go_back_size, distance_from_vma_start),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
+			__field(bool, do_break)
+			__field(unsigned long, go_back_size)
+			__field(unsigned long, distance_from_vma_start)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
+		__entry->do_break = do_break;
+		__entry->go_back_size = go_back_size;
+		__entry->distance_from_vma_start = distance_from_vma_start;
 	),
-	TP_printk("folio=%p", __entry->folio)
+	TP_printk("folio=%p do_break=%d go_back_size=%ld distance_from_vma_start=%ld", __entry->folio, __entry->do_break, __entry->go_back_size, __entry->distance_from_vma_start)
 );
 TRACE_EVENT(mm_vmscan_follow_address,
 	TP_PROTO(struct vm_area_struct *vma, unsigned long addr, unsigned long pgd_val, 
@@ -968,7 +939,66 @@ TRACE_EVENT(mm_vmscan_is_dirty_seq_hit,
 		__entry->refs,
 		__entry->seq_hits)
 );
-
+TRACE_EVENT(mm_vmscan_should_abort_scan,
+	TP_PROTO(int nr_reclaimed, int nr_to_reclaim, int order, bool root_reclaim),
+	TP_ARGS(nr_reclaimed, nr_to_reclaim, order, root_reclaim),
+	TP_STRUCT__entry(
+		__field(int, nr_reclaimed)
+		__field(int, nr_to_reclaim)
+		__field(int, order)
+		__field(bool, root_reclaim)
+	),
+	TP_fast_assign(
+		__entry->nr_reclaimed = nr_reclaimed;
+		__entry->nr_to_reclaim = nr_to_reclaim;
+		__entry->order = order;
+		__entry->root_reclaim = root_reclaim;
+	),
+	TP_printk("nr_reclaimed=%d nr_to_reclaim=%d order=%d root_reclaim=%d",
+		__entry->nr_reclaimed,
+		__entry->nr_to_reclaim,
+		__entry->order,
+		__entry->root_reclaim)
+);
+TRACE_EVENT(mm_vmscan_try_to_shrink_lruvec,
+	TP_PROTO(int delta, unsigned long scanned, long nr_to_scan),
+	TP_ARGS(delta, scanned, nr_to_scan),
+	TP_STRUCT__entry(
+		__field(int, delta)
+		__field(unsigned long, scanned)
+		__field(long, nr_to_scan)
+	),
+	TP_fast_assign(
+		__entry->delta = delta;
+		__entry->scanned = scanned;
+		__entry->nr_to_scan = nr_to_scan;
+	),
+	TP_printk("delta=%d scanned=%lu nr_to_scan=%ld",
+		__entry->delta,
+		__entry->scanned,
+		__entry->nr_to_scan)
+);
+TRACE_EVENT(mm_vmscan_scan_folios,
+	TP_PROTO(struct folio *folio, bool needs_release, struct address_space *mapping, bool is_dirty),
+	TP_ARGS(folio, needs_release, mapping, is_dirty),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(bool, needs_release)
+		__field(struct address_space *, mapping)
+		__field(bool, is_dirty)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->needs_release = needs_release;
+		__entry->mapping = mapping;
+		__entry->is_dirty = is_dirty;
+	),
+	TP_printk("folio=%p needs_release=%d mapping=%p is_dirty=%d",
+		__entry->folio,
+		__entry->needs_release,
+		__entry->mapping,
+		__entry->is_dirty)
+);
 #endif
 #endif /* _TRACE_VMSCAN_H */
 

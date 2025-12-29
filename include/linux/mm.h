@@ -869,8 +869,8 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++)
-		vma->last_fault_offset[i] = CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE - 1;
-	vma->last_fault_idx = 0;
+		vma->last_fault_offset[i] = (pgoff_t)-1;  // Use -1 as sentinel for empty entries
+	vma->last_fault_idx = -1;
 	vma->window_start = 0;
 	vma->window_end = 0;
 	vma->swap_ahead_size = MIN_LRU_BATCH;
