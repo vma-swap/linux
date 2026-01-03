@@ -1430,7 +1430,7 @@ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
  *	bits 12-61:	swap offset
  */
 #define __SWP_TYPE_SHIFT	6
-#define __SWP_TYPE_BITS		12
+#define __SWP_TYPE_BITS		22
 #define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
 #define __SWP_OFFSET_SHIFT	12
 #define __SWP_OFFSET_BITS	50

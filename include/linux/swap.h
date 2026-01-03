@@ -51,7 +51,7 @@ static inline int current_is_kswapd(void)
  * on 32-bit-pgoff_t architectures.  And that assumes that the architecture packs
  * the type/offset into the pte as 5/27 as well.
  */
-#define MAX_SWAPFILES_SHIFT	12
+#define MAX_SWAPFILES_SHIFT	22
 
 /*
  * Use some of the swap files numbers for other purposes. This
@@ -306,9 +306,8 @@ struct percpu_cluster {
  */
 struct swap_info_struct {
 	#ifdef CONFIG_SWAP_VMA
-	int nr_vmas;		/* number of vmas using this swap. this should be changes to a pointer to VMA since swapoff may leave a dangling pointer from the vma to the swap_info_struct */
-	unsigned long vm_start;
-	unsigned long vm_end;
+	// 	spin_lock(&swap_vma_lock) protects nr_vmas, vma, and shmem_inode_info
+	int nr_vmas; // number of vmas using this swap
 	#endif
 	struct percpu_ref users;	/* indicate and keep swap device valid. */
 	unsigned long	flags;		/* SWP_USED etc: see above */
@@ -507,9 +506,9 @@ extern swp_entry_t get_swap_page_of_type(int);
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order);
 #else
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order, struct folio *folio);
-extern int get_avail_swap_info_count(void);
 #ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-extern void mkswap_swapoff_on_vma_free(struct swap_info_struct *si);
+extern void mkswap_swapoff_on_vma_free(struct swap_info_struct *si,
+				       struct vm_area_struct *vma);
 #endif
 #endif
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
@@ -531,6 +530,7 @@ struct backing_dev_info;
 extern int init_swap_address_space(unsigned int type, unsigned long nr_pages);
 extern void exit_swap_address_space(unsigned int type);
 extern struct swap_info_struct *get_swap_device(swp_entry_t entry);
+extern void simple_swap_ref_put(struct swap_info_struct *si);
 sector_t swap_folio_sector(struct folio *folio);
 
 static inline void put_swap_device(struct swap_info_struct *si)
@@ -538,7 +538,6 @@ static inline void put_swap_device(struct swap_info_struct *si)
 	/* Use simple atomic refcount if percpu_ref is not initialized */
 	/* Check if percpu_ref was never initialized: data is NULL or DEAD flag is set */
 	if (!si->users.data || (si->users.percpu_count_ptr & __PERCPU_REF_DEAD)) {
-		extern void simple_swap_ref_put(struct swap_info_struct *si);
 		simple_swap_ref_put(si);
 	} else {
 		percpu_ref_put(&si->users);

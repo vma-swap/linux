@@ -291,7 +291,7 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
  * the offset field is always non-zero.
  */
 #define __SWP_TYPE_SHIFT	2
-#define __SWP_TYPE_BITS		12
+#define __SWP_TYPE_BITS		22
 #define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
 #define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT + 1)
 

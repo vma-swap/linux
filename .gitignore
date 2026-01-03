@@ -187,3 +187,4 @@ sphinx_*/
 image/
 vm1.qcow2
 vm2.qcow2
+vm.log

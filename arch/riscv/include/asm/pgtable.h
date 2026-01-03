@@ -864,7 +864,7 @@ extern pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
  *	bits 12 to XLEN-1:	swap offset
  */
 #define __SWP_TYPE_SHIFT	7
-#define __SWP_TYPE_BITS		12
+#define __SWP_TYPE_BITS		22
 #define __SWP_TYPE_MASK		((1UL << __SWP_TYPE_BITS) - 1)
 #define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
 

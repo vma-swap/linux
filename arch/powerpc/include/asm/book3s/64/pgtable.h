@@ -646,7 +646,7 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 	BUILD_BUG_ON(_PAGE_HPTEFLAGS & _PAGE_SWP_EXCLUSIVE);	\
 	} while (0)
 
-#define SWP_TYPE_BITS 12
+#define SWP_TYPE_BITS 22
 #define SWP_TYPE_MASK		((1UL << SWP_TYPE_BITS) - 1)
 #define __swp_type(x)		((x).val & SWP_TYPE_MASK)
 #define __swp_offset(x)		(((x).val & PTE_RPN_MASK) >> PAGE_SHIFT)
