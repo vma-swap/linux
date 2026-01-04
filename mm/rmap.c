@@ -2669,14 +2669,15 @@ void rmap_walk_anon_no_yield(struct folio *folio,
 		// non blocking version of rmap_walk_anon_lock
 		rcu_read_lock();
 		anon_vma = folio_anon_vma(folio);
-		if (!anon_vma)
+		if (!anon_vma) {
+			rcu_read_unlock();
 			return;
+		}
+		/* Once we have the lock, anon_vma is protected by it, not RCU */
 		while (!anon_vma_trylock_read(anon_vma))
 			cpu_relax();
 		rcu_read_unlock();
 	}
-	if (!anon_vma)
-		return;
 
 	pgoff_start = folio_pgoff(folio);
 	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
@@ -2827,6 +2828,26 @@ void rmap_walk(struct folio *folio, struct rmap_walk_control *rwc)
 		rmap_walk_anon(folio, rwc, false);
 	else
 		rmap_walk_file(folio, rwc, false);
+}
+
+void rmap_walk_no_yield(struct folio *folio, struct rmap_walk_control *rwc)
+{
+	if (unlikely(folio_test_ksm(folio)))
+		return; /* KSM not supported in no_yield version */
+	else if (folio_test_anon(folio))
+		rmap_walk_anon_no_yield(folio, rwc, false);
+	else
+		rmap_walk_file_no_yield(folio, rwc, false);
+}
+
+void rmap_walk_locked_no_yield(struct folio *folio, struct rmap_walk_control *rwc)
+{
+	if (unlikely(folio_test_ksm(folio)))
+		return; /* KSM not supported in no_yield version */
+	else if (folio_test_anon(folio))
+		rmap_walk_anon_no_yield(folio, rwc, true);
+	else
+		rmap_walk_file_no_yield(folio, rwc, true);
 }
 
 /* Like rmap_walk, but caller holds relevant rmap lock */

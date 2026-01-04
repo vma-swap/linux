@@ -529,7 +529,7 @@ void __vm_area_free(struct vm_area_struct *vma)
 		/* Call swapoff if this was the last VMA */
 		#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 		if (si)
-			mkswap_swapoff_on_vma_free(si);
+			mkswap_swapoff_on_vma_free(si, vma);
 		#endif
 	}
 	#endif

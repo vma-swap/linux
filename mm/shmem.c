@@ -84,6 +84,8 @@ static struct vfsmount *shm_mnt __ro_after_init;
 
 #include <linux/uaccess.h>
 
+#include <trace/events/swap.h>
+
 #include "internal.h"
 
 #define BLOCKS_PER_PAGE  (PAGE_SIZE/512)
@@ -2726,6 +2728,44 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 	if (folio) {
 		vmf->page = folio_file_page(folio, vmf->pgoff);
 		ret |= VM_FAULT_LOCKED;
+
+		#ifdef CONFIG_VMA_RECLAIM
+		{
+			struct vm_area_struct *vma = vmf->vma;
+			unsigned long flags;
+			spin_lock_irqsave(&vma->reclaim_lock, flags);
+			bool is_sequential = false;
+			for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
+				if (vma->last_fault_offset[i] != -1 && vmf->pgoff - vma->vm_pgoff == vma->last_fault_offset[i] + 1) {
+					is_sequential = true;
+					break;
+				}
+			}
+			if (is_sequential)
+				folio_set_seq(folio);
+			else
+				folio_clear_seq(folio);
+			if (vmf->pgoff - vma->vm_pgoff >= vma->window_start && vmf->pgoff - vma->vm_pgoff <= vma->window_end + vma->swap_ahead_size) {
+				// fault inside window, reset window
+				vma->window_start = 0;
+				vma->window_end = 0;
+				vma->swap_ahead_size = MIN_LRU_BATCH;
+			}
+			unsigned long old_addr = 0;
+			if (vma->last_fault_idx != -1) {
+				old_addr = vma->vm_start + ((vma->last_fault_offset[vma->last_fault_idx]) << PAGE_SHIFT);
+			}
+			pgoff_t start = vma->window_start;
+			pgoff_t end = vma->window_end;
+			// Since we test forward, we need to store backwards to maintain proper sequence
+			int new_idx = (vma->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
+			vma->last_fault_idx = new_idx;
+			vma->last_fault_offset[new_idx] = vmf->pgoff - vma->vm_pgoff;
+			size_t swap_ahead = vma->swap_ahead_size;
+			spin_unlock_irqrestore(&vma->reclaim_lock, flags);
+			trace_vma_fault(vma, vma->vm_start + ((vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT), old_addr, folio_test_seq(folio), vmf->pgoff - vma->vm_pgoff, start, end, swap_ahead, folio, folio_ref_count(folio));
+		}
+		#endif
 	}
 	return ret;
 }

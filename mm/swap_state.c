@@ -379,7 +379,7 @@ struct folio *swap_cache_get_folio(swp_entry_t entry,
 			win = SWAP_RA_WIN(ra_val);
 			hits = SWAP_RA_HITS(ra_val);
 			if (readahead){
-				#ifdef CONFIG_SWAP_VMA
+				#ifdef CONFIG_VMA_RECLAIM
 				unsigned flags;
 				spin_lock_irqsave(&vma->ra_lock, flags);
 				vma->ra_hits += 1;

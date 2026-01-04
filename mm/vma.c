@@ -105,6 +105,39 @@ static inline bool are_anon_vmas_compatible(struct vm_area_struct *vma1,
 	return is_mergeable_anon_vma(vma1->anon_vma, vma2->anon_vma, NULL);
 }
 
+#ifdef CONFIG_SWAP_VMA
+/*
+ * Prevent merging if either side of the candidate merge has swap state
+ * attached via vma->si.
+ */
+static inline bool vma_swap_mergeable(struct vma_merge_struct *vmg,
+				      struct vm_area_struct *other)
+{
+	struct swap_info_struct *si;
+	unsigned long irq_flags;
+	if (vmg->vma) {
+	spin_lock_irqsave(&vmg->vma->swap_lock, irq_flags);
+		si = vmg->vma->si;
+		spin_unlock_irqrestore(&vmg->vma->swap_lock, irq_flags);
+		if (si){
+			trace_vma_swap_mergeable(vmg->vma, NULL, si, false);
+			return false;
+		}
+	}
+	if (other) {
+		spin_lock_irqsave(&other->swap_lock, irq_flags);
+		si = other->si;
+		spin_unlock_irqrestore(&other->swap_lock, irq_flags);
+		if (si){
+			trace_vma_swap_mergeable(other, NULL, si, false);
+			return false;
+		}
+	}
+	trace_vma_swap_mergeable(vmg->vma, other, NULL, true);
+	return true;
+}
+#endif
+
 /*
  * init_multi_vma_prep() - Initializer for struct vma_prepare
  * @vp: The vma_prepare struct
@@ -150,7 +183,10 @@ static void init_multi_vma_prep(struct vma_prepare *vp,
 static bool can_vma_merge_before(struct vma_merge_struct *vmg)
 {
 	pgoff_t pglen = PHYS_PFN(vmg->end - vmg->start);
-
+	#ifdef CONFIG_SWAP_VMA
+	if (!vma_swap_mergeable(vmg, vmg->next))
+		return false;
+	#endif
 	if (is_mergeable_vma(vmg, /* merge_next = */ true) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->next->anon_vma, vmg->next)) {
 		if (vmg->next->vm_pgoff == vmg->pgoff + pglen)
@@ -171,6 +207,10 @@ static bool can_vma_merge_before(struct vma_merge_struct *vmg)
  */
 static bool can_vma_merge_after(struct vma_merge_struct *vmg)
 {
+	#ifdef CONFIG_SWAP_VMA
+	if (!vma_swap_mergeable(vmg, vmg->prev))
+		return false;
+	#endif
 	if (is_mergeable_vma(vmg, /* merge_next = */ false) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->prev->anon_vma, vmg->prev)) {
 		if (vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff)

@@ -4600,8 +4600,73 @@ check_folio:
 	 * check after taking the PT lock and making sure that nobody
 	 * concurrently faulted in this page and set PG_anon_exclusive.
 	 */
-	BUG_ON(!folio_test_anon(folio) && folio_test_mappedtodisk(folio));
-	BUG_ON(folio_test_anon(folio) && PageAnonExclusive(page));
+	if (unlikely(!folio_test_anon(folio) && folio_test_mappedtodisk(folio))) {
+		printk("BUG: do_swap_page mappedtodisk check failed\n");
+		printk("  folio=%p page=%p vmf->address=0x%lx\n", folio, page, vmf->address);
+		printk("  folio flags: anon=%d swapcache=%d large=%d nr_pages=%lu\n",
+		       folio_test_anon(folio), folio_test_swapcache(folio),
+		       folio_test_large(folio), folio_nr_pages(folio));
+		printk("  folio->index=%lu folio->mapping=%p\n",
+		       folio->index, folio->mapping);
+		printk("  folio->swap.val=0x%lx (type=%u offset=%lu)\n",
+		       folio->swap.val, swp_type(folio->swap), swp_offset(folio->swap));
+		printk("  vmf->orig_pte=0x%llx\n", (unsigned long long)pte_val(vmf->orig_pte));
+		if (!pte_none(vmf->orig_pte)) {
+			swp_entry_t orig_entry = pte_to_swp_entry(vmf->orig_pte);
+			printk("  orig_pte swap: type=%u offset=%lu val=0x%lx\n",
+			       swp_type(orig_entry), swp_offset(orig_entry), orig_entry.val);
+		}
+		printk("  page flags: 0x%lx AnonExclusive=%d MappedToDisk=%d\n",
+		       page->flags, PageAnonExclusive(page), folio_test_mappedtodisk(folio));
+		printk("  vma=%p vm_start=0x%lx vm_end=0x%lx vm_pgoff=%lu\n",
+		       vma, vma ? vma->vm_start : 0, vma ? vma->vm_end : 0,
+		       vma ? vma->vm_pgoff : 0);
+		if (vma && vma->vm_file)
+			printk("  vma->vm_file=%p f_mapping=%p\n",
+			       vma->vm_file, vma->vm_file->f_mapping);
+		printk("  entry.val=0x%lx (type=%u offset=%lu)\n",
+		       entry.val, swp_type(entry), swp_offset(entry));
+		printk("  swapcache=%p page_idx=%lu address=0x%lx\n",
+		       swapcache, page_idx, address);
+		BUG();
+	}
+	if (unlikely(folio_test_anon(folio) && PageAnonExclusive(page))) {
+		printk("BUG: do_swap_page AnonExclusive check failed\n");
+		printk("  folio=%p page=%p vmf->address=0x%lx\n", folio, page, vmf->address);
+		printk("  folio flags: anon=%d swapcache=%d large=%d nr_pages=%lu\n",
+		       folio_test_anon(folio), folio_test_swapcache(folio),
+		       folio_test_large(folio), folio_nr_pages(folio));
+		printk("  folio->index=%lu folio->mapping=%p\n",
+		       folio->index, folio->mapping);
+		printk("  folio->swap.val=0x%lx (type=%u offset=%lu)\n",
+		       folio->swap.val, swp_type(folio->swap), swp_offset(folio->swap));
+		printk("  vmf->orig_pte=0x%llx\n", (unsigned long long)pte_val(vmf->orig_pte));
+		if (!pte_none(vmf->orig_pte)) {
+			swp_entry_t orig_entry = pte_to_swp_entry(vmf->orig_pte);
+			printk("  orig_pte swap: type=%u offset=%lu val=0x%lx\n",
+			       swp_type(orig_entry), swp_offset(orig_entry), orig_entry.val);
+		}
+		printk("  page flags: 0x%lx AnonExclusive=%d MappedToDisk=%d\n",
+		       page->flags, PageAnonExclusive(page), folio_test_mappedtodisk(folio));
+		printk("  page index in folio: %lu (folio_page_idx=%lu)\n",
+		       page - &folio->page, folio_page_idx(folio, page));
+		printk("  vma=%p vm_start=0x%lx vm_end=0x%lx vm_pgoff=%lu\n",
+		       vma, vma ? vma->vm_start : 0, vma ? vma->vm_end : 0,
+		       vma ? vma->vm_pgoff : 0);
+		if (vma && vma->vm_file)
+			printk("  vma->vm_file=%p f_mapping=%p\n",
+			       vma->vm_file, vma->vm_file->f_mapping);
+		printk("  entry.val=0x%lx (type=%u offset=%lu)\n",
+		       entry.val, swp_type(entry), swp_offset(entry));
+		printk("  swapcache=%p page_idx=%lu address=0x%lx\n",
+		       swapcache, page_idx, address);
+		if (folio_test_large(folio)) {
+			printk("  LARGE FOLIO: swap offset diff = %ld (entry offset %lu - folio offset %lu)\n",
+			       (long)(swp_offset(entry) - swp_offset(folio->swap)),
+			       swp_offset(entry), swp_offset(folio->swap));
+		}
+		BUG();
+	}
 
 	/*
 	 * Check under PT lock (to protect against concurrent fork() sharing

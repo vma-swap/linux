@@ -608,21 +608,23 @@ TRACE_EVENT(mm_vmscan_get_prev_folio,
 		__entry->has_mapping)
 );
 TRACE_EVENT(mm_vmscan_get_first_folio_in_seq,
-	TP_PROTO(struct folio *folio, bool do_break, unsigned long go_back_size, unsigned long distance_from_vma_start),
-	TP_ARGS(folio, do_break, go_back_size, distance_from_vma_start),
+	TP_PROTO(struct folio *folio, unsigned long first_addr, bool do_break, unsigned long go_back_size, unsigned long distance_from_vma_start),
+	TP_ARGS(folio, first_addr, do_break, go_back_size, distance_from_vma_start),
 	TP_STRUCT__entry(
 		    __field(struct folio *, folio)
+			__field(unsigned long, first_addr)
 			__field(bool, do_break)
 			__field(unsigned long, go_back_size)
 			__field(unsigned long, distance_from_vma_start)
 	),
 	TP_fast_assign(
 		__entry->folio = folio;
+		__entry->first_addr = first_addr;
 		__entry->do_break = do_break;
 		__entry->go_back_size = go_back_size;
 		__entry->distance_from_vma_start = distance_from_vma_start;
 	),
-	TP_printk("folio=%p do_break=%d go_back_size=%ld distance_from_vma_start=%ld", __entry->folio, __entry->do_break, __entry->go_back_size, __entry->distance_from_vma_start)
+	TP_printk("folio=%p first_addr=0x%lx do_break=%d go_back_size=%ld distance_from_vma_start=%ld", __entry->folio, __entry->first_addr, __entry->do_break, __entry->go_back_size, __entry->distance_from_vma_start)
 );
 TRACE_EVENT(mm_vmscan_follow_address,
 	TP_PROTO(struct vm_area_struct *vma, unsigned long addr, unsigned long pgd_val, 
@@ -745,11 +747,12 @@ TRACE_EVENT(mm_vmscan_reclaim_page,
 		__entry->memcg_id)
 );
 TRACE_EVENT(mm_vmscan_get_vma_for_folio,
-	TP_PROTO(struct folio *folio, struct vm_area_struct *vma, pgoff_t window_start, pgoff_t window_end,size_t swap_ahead_size, int is_anon, int is_file, int has_mapping),
-	TP_ARGS(folio, vma, window_start, window_end,swap_ahead_size, is_anon, is_file, has_mapping),
+	TP_PROTO(struct folio *folio, struct vm_area_struct *vma, unsigned long cur_addr, pgoff_t window_start, pgoff_t window_end,size_t swap_ahead_size, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(folio, vma, cur_addr, window_start, window_end,swap_ahead_size, is_anon, is_file, has_mapping),
 	TP_STRUCT__entry(
 			__field(struct folio *, folio)
 			__field(struct vm_area_struct *, vma)
+			__field(unsigned long, cur_addr)
 			__field(pgoff_t, window_start)
 			__field(pgoff_t, window_end)
 			__field(size_t, swap_ahead_size)
@@ -760,6 +763,7 @@ TRACE_EVENT(mm_vmscan_get_vma_for_folio,
 	TP_fast_assign(
 		__entry->folio = folio;
 		__entry->vma = vma;
+		__entry->cur_addr = cur_addr;
 	  	__entry->window_start = window_start;
 		__entry->window_end = window_end;
 		__entry->swap_ahead_size = swap_ahead_size;
@@ -768,9 +772,10 @@ TRACE_EVENT(mm_vmscan_get_vma_for_folio,
 		__entry->has_mapping = has_mapping;
 	)
 	,
-	TP_printk("folio=%p vma=%p window_start=%llu window_end=%llu swap_ahead_size=%ld is_anon=%d is_file=%d has_mapping=%d",
+	TP_printk("folio=%p vma=%p cur_addr=0x%lx window_start=%llu window_end=%llu swap_ahead_size=%ld is_anon=%d is_file=%d has_mapping=%d",
 		__entry->folio,
 		__entry->vma,
+		__entry->cur_addr,
 	  	(unsigned long long)__entry->window_start,
 		(unsigned long long)__entry->window_end,
 		__entry->swap_ahead_size,
@@ -819,9 +824,9 @@ TRACE_EVENT(mm_vmscan_pageout,
 );
 TRACE_EVENT(mm_vmscan_is_page_cache_freeable,
 
-	TP_PROTO(struct folio *folio, int ref_count, int is_private, int is_private_2, int nr_pages, struct vm_area_struct *vma),
+	TP_PROTO(struct folio *folio, int ref_count, int is_private, int is_private_2, int nr_pages),
 
-	TP_ARGS(folio, ref_count, is_private, is_private_2, nr_pages, vma),
+	TP_ARGS(folio, ref_count, is_private, is_private_2, nr_pages),
 
 	TP_STRUCT__entry(
 		__field(struct folio *, folio)
@@ -829,7 +834,6 @@ TRACE_EVENT(mm_vmscan_is_page_cache_freeable,
 		__field(int, is_private)
 		__field(int, is_private_2)
 		__field(int, nr_pages)
-		__field(struct vm_area_struct *, vma)
 	),
 
 	TP_fast_assign(
@@ -838,16 +842,14 @@ TRACE_EVENT(mm_vmscan_is_page_cache_freeable,
 		__entry->is_private = is_private;
 		__entry->is_private_2 = is_private_2;
 		__entry->nr_pages = nr_pages;
-		__entry->vma = vma;
 	),
 
-	TP_printk("folio=%p ref_count=%d is_private=%d is_private_2=%d nr_pages=%d vma=%p",
+	TP_printk("folio=%p ref_count=%d is_private=%d is_private_2=%d nr_pages=%d",
 		  __entry->folio,
 		  __entry->ref_count,
 		  __entry->is_private,
 		  __entry->is_private_2,
-		  __entry->nr_pages,
-		  __entry->vma)
+		  __entry->nr_pages)
 );
 TRACE_EVENT(mm_vmscan_folio_refs,
 	TP_PROTO(struct folio *folio, int refs, char* reason),
@@ -999,6 +1001,60 @@ TRACE_EVENT(mm_vmscan_scan_folios,
 		__entry->mapping,
 		__entry->is_dirty)
 );
+TRACE_EVENT(mm_vmscan_is_seq_dirty_hit,
+	TP_PROTO(struct folio *folio, bool is_swapcache, bool is_anon, bool is_swapbacked, bool is_dirty, bool is_writeback),
+	TP_ARGS(folio, is_swapcache, is_anon, is_swapbacked, is_dirty, is_writeback),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(bool, is_swapcache)
+		__field(bool, is_anon)
+		__field(bool, is_swapbacked)
+		__field(bool, is_dirty)
+		__field(bool, is_writeback)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->is_swapcache = is_swapcache;
+		__entry->is_anon = is_anon;
+		__entry->is_swapbacked = is_swapbacked;
+		__entry->is_dirty = is_dirty;
+		__entry->is_writeback = is_writeback;
+	),
+	TP_printk("folio=%p is_swapcache=%d is_anon=%d is_swapbacked=%d is_dirty=%d is_writeback=%d",
+		__entry->folio,
+		__entry->is_swapcache,
+		__entry->is_anon,
+		__entry->is_swapbacked,
+		__entry->is_dirty,
+		__entry->is_writeback)
+);
+TRACE_EVENT(mm_vmscan_get_vma,
+	TP_PROTO(struct vm_area_struct *vma, unsigned long address, struct folio *folio, int is_anon, int is_file, int has_mapping),
+	TP_ARGS(vma, address, folio, is_anon, is_file, has_mapping),
+	TP_STRUCT__entry(
+		__field(struct vm_area_struct *, vma)
+		__field(unsigned long, address)
+		__field(struct folio *, folio)
+		__field(int, is_anon)
+		__field(int, is_file)
+		__field(int, has_mapping)
+	),
+	TP_fast_assign(
+		__entry->vma = vma;
+		__entry->address = address;
+		__entry->folio = folio;
+		__entry->is_anon = is_anon;
+		__entry->is_file = is_file;
+		__entry->has_mapping = has_mapping;
+	),
+	TP_printk("vma=%p address=0x%lx folio=%p is_anon=%d is_file=%d has_mapping=%d",
+		__entry->vma,
+		__entry->address,
+		__entry->folio,
+		__entry->is_anon,	
+		__entry->is_file,
+		__entry->has_mapping)
+	);
 #endif
 #endif /* _TRACE_VMSCAN_H */
 

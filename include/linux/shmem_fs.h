@@ -40,6 +40,9 @@ struct shmem_inode_info {
 	struct dquot __rcu	*i_dquot[MAXQUOTAS];
 #endif
 	struct inode		vfs_inode;
+#ifdef CONFIG_SWAP_VMA
+	struct swap_info_struct *si;	/* swap info struct */
+#endif
 };
 
 #define SHMEM_FL_USER_VISIBLE		(FS_FL_USER_VISIBLE | FS_CASEFOLD_FL)
@@ -104,6 +107,16 @@ static inline bool shmem_mapping(struct address_space *mapping)
 	return false;
 }
 #endif /* CONFIG_SHMEM */
+
+static inline bool folio_is_shmem(struct folio *folio)
+{
+#ifdef CONFIG_SHMEM
+	return folio_mapping(folio) &&
+		shmem_mapping(folio_mapping(folio));
+#else
+	return false;
+#endif
+}
 extern void shmem_unlock_mapping(struct address_space *mapping);
 extern struct page *shmem_read_mapping_page_gfp(struct address_space *mapping,
 					pgoff_t index, gfp_t gfp_mask);

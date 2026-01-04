@@ -213,7 +213,7 @@ TRACE_EVENT(mm_filemap_folio_end_writeback,
 		__entry->reclaim = reclaim;
 	),
 	TP_printk("folio=%p pfn=0x%lx reclaim=%d",
-		__entry->folio, __entry->pfn, __print_flags(__entry->reclaim, "|", true, false))
+		__entry->folio, __entry->pfn, __entry->reclaim)
 );
 #endif /* _TRACE_FILEMAP_H */
 

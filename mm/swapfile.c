@@ -77,11 +77,11 @@ int create_kernel_swapfile(char* filename, unsigned long size_pages,int swap_fla
 extern int create_swap_file(char* path, size_t path_size);
 #ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
 static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
-			       unsigned long vm_start, unsigned long vm_end,
+			       unsigned long backing_size,
 			       bool swapon_mutex_held);
 static int mkswap_enlarge_file(struct swap_info_struct *si, unsigned long new_size_pages);
-static int mkswap_swapoff_fast(const char __user *specialfile);
-static int mkswap_swapoff_fast_si(struct swap_info_struct *p);
+static int mkswap_swapoff_fast_si(struct swap_info_struct *p,
+				  bool disable_slots_cache);
 #endif
 
 /* Forward declarations for static functions */
@@ -687,6 +687,7 @@ static void swap_discard_work(struct work_struct *work)
 	swap_do_scheduled_discard(si);
 }
 
+#ifndef CONFIG_SWAP_VMA
 static void swap_users_ref_free(struct percpu_ref *ref)
 {
 	struct swap_info_struct *si;
@@ -695,6 +696,7 @@ static void swap_users_ref_free(struct percpu_ref *ref)
 	complete(&si->comp);
 }
 
+#endif
 /* Simple atomic refcount put for swap devices not using percpu_ref */
 void simple_swap_ref_put(struct swap_info_struct *si)
 {
@@ -755,6 +757,7 @@ static void partial_free_cluster(struct swap_info_struct *si,
  * Note: allocation doesn't acquire si lock, and may drop the ci lock for
  * reclaim, so the cluster could be any where when called.
  */
+#ifndef CONFIG_SWAP_VMA
 static void relocate_cluster(struct swap_info_struct *si,
 			     struct swap_cluster_info *ci)
 {
@@ -780,7 +783,7 @@ static void relocate_cluster(struct swap_info_struct *si,
 				     CLUSTER_FLAG_FULL);
 	}
 }
-
+#endif
 /*
  * The cluster corresponding to page_nr will be used. The cluster will not be
  * added to free cluster list and its usage counter will be increased by 1.
@@ -799,6 +802,7 @@ static void inc_cluster_info_page(struct swap_info_struct *si,
 	VM_BUG_ON(ci->flags);
 }
 
+#ifndef CONFIG_SWAP_VMA
 static bool cluster_reclaim_range(struct swap_info_struct *si,
 				  struct swap_cluster_info *ci,
 				  unsigned long start, unsigned long end)
@@ -866,6 +870,7 @@ static bool cluster_scan_range(struct swap_info_struct *si,
 
 	return true;
 }
+#endif
 static void vma_alloc_range(struct swap_info_struct *si,
 			    unsigned long start, unsigned char usage,
 			    unsigned int order)
@@ -890,6 +895,7 @@ static void vma_alloc_range(struct swap_info_struct *si,
 	memset(si->swap_map + start, usage, nr_pages);
 	swap_range_alloc(si, nr_pages);
 }
+#ifndef CONFIG_SWAP_VMA
 static bool cluster_alloc_range(struct swap_info_struct *si, struct swap_cluster_info *ci,
 				unsigned int start, unsigned char usage,
 				unsigned int order)
@@ -970,7 +976,7 @@ out:
 		si->global_cluster->next[order] = next;
 	return found;
 }
-
+#endif
 /* Return true if reclaimed a whole cluster */
 static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 {
@@ -1022,7 +1028,7 @@ static void swap_reclaim_work(struct work_struct *work)
 	lockdep_assert_not_held(&si->lock);
 	swap_reclaim_full_clusters(si, true);
 }
-
+#ifndef CONFIG_SWAP_VMA
 /*
  * Try to get swap entries with specified order from current cpu's swap entry
  * pool (a cluster). This might involve allocating a new cluster for current CPU
@@ -1154,7 +1160,7 @@ done:
 		spin_unlock(&si->global_cluster_lock);
 	return found;
 }
-
+#endif
 /* SWAP_USAGE_OFFLIST_BIT can only be set by this helper. */
 static void del_from_avail_list(struct swap_info_struct *si, bool swapoff)
 {
@@ -1322,7 +1328,7 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 #ifdef CONFIG_SWAP_VMA
 static int cluster_alloc_swap(struct swap_info_struct *si,
 			     unsigned char usage, int nr,
-			     swp_entry_t slots[], int order,unsigned long folio_index)
+			     swp_entry_t slots[], int order, unsigned long folio_index)
 #else
 static int cluster_alloc_swap(struct swap_info_struct *si,
 			     unsigned char usage, int nr,
@@ -1351,7 +1357,7 @@ static int cluster_alloc_swap(struct swap_info_struct *si,
 static int scan_swap_map_slots(struct swap_info_struct *si,
 			       unsigned char usage, int nr,
 			       swp_entry_t slots[], int order,
-			       pgoff_t folio_index)
+			       unsigned long folio_index)
 #else
 static int scan_swap_map_slots(struct swap_info_struct *si,
 			       unsigned char usage, int nr,
@@ -1423,180 +1429,129 @@ static bool get_swap_device_info(struct swap_info_struct *si)
 	return true;
 }
 #ifdef CONFIG_SWAP_VMA
-struct vma_rmap_data {
-		struct swap_info_struct *si;
-		pgoff_t index;
-		bool has_vma;
-		unsigned long vm_start;
-		unsigned long vm_end;
-		bool skip_si;
 
+struct swapfile_rmap_data {
+	struct vm_area_struct *vma;
+	struct swap_info_struct *si;
+	unsigned int vma_count;
+	unsigned long backing_size;
+	unsigned long address;
+	unsigned long index;
 };
-static inline pgoff_t get_swap_index_for_folio(struct folio *folio, struct vm_area_struct *vma, unsigned long address)
-{	pgoff_t index;
-	if(vma->vm_flags & VM_GROWSDOWN){
+
+static bool get_swapout_data(struct folio *folio, struct vm_area_struct *vma,
+		     unsigned long address, void *arg)
+{
+	struct swapfile_rmap_data *data = arg;
+	if (!vma){
+		printk(KERN_ERR "get_swapout_data: vma is NULL\n");
+		return true; // continue walking
+	}
+	data->vma = vma;
+	data->vma_count++;
+	data->si = vma->si;
+	unsigned long index;
+	if (vma->vm_flags & VM_GROWSDOWN){
 		index = ((vma->vm_end - address)>> PAGE_SHIFT) - 1;
 	}
 	else{
-		index = folio->index - vma->vm_pgoff;
+		index = (address - vma->vm_start) >> PAGE_SHIFT;
 	}
-	trace_get_swap_index_for_folio(vma,folio,index,address);
-	return index;
-}
-static bool vma_get_swap_info(struct folio *folio, struct vm_area_struct *vma,
-		     unsigned long address, void *arg)
-{
-	struct vma_rmap_data *rmap_data = arg;
-	rmap_data->has_vma = true;
-	unsigned long flags;
-	spin_lock_irqsave(&vma->swap_lock, flags);
-	rmap_data->si=vma->si;
-	spin_unlock_irqrestore(&vma->swap_lock, flags);
-	rmap_data->index = get_swap_index_for_folio(folio, vma, address);
-	trace_vma_get_swap_info(vma, rmap_data->si , folio, rmap_data->index, address);
-	rmap_data->vm_start = vma->vm_start;
-	rmap_data->vm_end = vma->vm_end;
-	return rmap_data->si == NULL;
+	BUG_ON(data->index && (index != data->index));
+	data->index = index;
+	unsigned long backing_size = vma->vm_end - vma->vm_start;
+	BUG_ON(data->backing_size && (backing_size != data->backing_size));
+	data->backing_size = backing_size;
 
-}
-static const unsigned long vma_size_bins[] = {
-	256,
-	2048,
-	65536,
-	524288,
-};
-
-static inline int size_to_bin(unsigned long pages)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(vma_size_bins); i++) {
-		if (pages <= vma_size_bins[i])
-			return i;
-	}
-
-	return ARRAY_SIZE(vma_size_bins); /* largest bin */
+	trace_get_swapout_data(folio, vma, address, data->index, data->backing_size, vma->vm_start, vma->vm_end, vma->vm_flags & VM_GROWSDOWN, vma->vm_flags & VM_SHARED);
+	return true;
 }
 
-static bool vma_set_swap_info(struct folio *folio, struct vm_area_struct *vma,
-		     unsigned long address, void *arg)
+static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, struct vm_area_struct **vma, unsigned long *index, unsigned long *backing_size)
 {
-	struct vma_rmap_data *rmap_data = arg;
-	struct swap_info_struct *actual_si;
-	rmap_data->has_vma = true;
-	unsigned long vma_pages;
-	if(!rmap_data->si){
-		return false;
-	}
-	rmap_data->vm_start = vma->vm_start;
-	rmap_data->vm_end = vma->vm_end;
-	// Convert byte distance to pages: (vm_end - vm_start) is in bytes, divide by PAGE_SIZE via right-shift
-	if (!vma->si){
-		if (vma->vm_end != rmap_data->si->vm_end || vma->vm_start != rmap_data->si->vm_start) {
-			rmap_data->skip_si = true;
-			// printk(KERN_INFO "%s:%s:%d [CPU:%d] skipping setting si for vma. vm_start=%lu vm_end=%lu si_vm_start=%lu si_vm_end=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma->vm_start,vma->vm_end,rmap_data->si->vm_start,rmap_data->si->vm_end);
-			trace_vma_checking_si_vm_size(vma, rmap_data->si, true);
-			return false;
-		}
-		vma_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
-		// printk(KERN_INFO "%s:%s:%d [CPU:%d] setting si for vma. vma_pages=%lu si_pages=%lu vma=[%lu-%lu] folio=%p address=%lu\n",__FILE__,__func__,__LINE__,smp_processor_id(),vma_pages,rmap_data->si->max,rmap_data->vm_start,rmap_data->vm_end,folio,address);
-	}
-	trace_vma_checking_si_vm_size(vma, rmap_data->si,rmap_data->skip_si);
-	rmap_data->index = get_swap_index_for_folio(folio, vma, address);
-	unsigned long flags;
-	spin_lock_irqsave(&vma->swap_lock, flags);
-	actual_si = vma->si;
-	if(!actual_si){
-		vma->si = rmap_data->si;
-		actual_si = vma->si;
-	}
-	spin_unlock_irqrestore(&vma->swap_lock, flags);
-	trace_vma_set_swap_info(vma, actual_si ,rmap_data->si, folio, rmap_data->index, address);
-	rmap_data->si = actual_si;
-	return false;
-}
-
-static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, pgoff_t* folio_index, unsigned long* vm_start, unsigned long* vm_end)
-{
-	struct vma_rmap_data data = {
+	struct swapfile_rmap_data data = {
+		.vma = NULL,
+		.vma_count = 0,
+		.backing_size = 0,
 		.si = NULL,
-		.index = 0, // think of a way to know this is empty....
-		.has_vma = false,
-		.vm_start = 0,
-		.vm_end = 0,
+		.address = 0,
+		.index = 0,
 	};
-
 	enum ttu_flags flags = TTU_BATCH_FLUSH;
 	struct rmap_walk_control rwc = {
-		.rmap_one = vma_get_swap_info,
+		.rmap_one = get_swapout_data,
 		.arg = &data,
 		.done = NULL,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
-	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_locked(folio, &rwc);
-	else
-		rmap_walk(folio, &rwc);
-	*folio_index = data.index;
-	trace_get_swap_info_from_folio(folio, data.si, *folio_index);
-	*vm_start = data.vm_start;
-	*vm_end = data.vm_end;
-	return data.si;
+	struct swap_info_struct *si = NULL;
+	if (folio_test_anon(folio)){
+		if (flags & TTU_RMAP_LOCKED)
+			rmap_walk_locked(folio, &rwc);
+		else
+			rmap_walk(folio, &rwc);
+		if(!data.vma){
+			return NULL;
+		}
+		unsigned long irq_flags;
+		spin_lock_irqsave(&data.vma->swap_lock, irq_flags);
+		si = data.vma->si;
+		spin_unlock_irqrestore(&data.vma->swap_lock, irq_flags);
+		*index = data.index;
+		*backing_size = data.backing_size;
+		*vma = data.vma;
+	}
+	else if (folio_is_shmem(folio)){
+		struct inode *inode = folio_inode(folio);
+		struct shmem_inode_info *shmem_inode = SHMEM_I(inode);
+		spin_lock(&shmem_inode->lock);
+		si = shmem_inode->si;
+		spin_unlock(&shmem_inode->lock);
+		*index = folio_index(folio);
+		*backing_size = max_t(unsigned long, i_size_read(inode), PAGE_SIZE);
+		*vma = NULL;
+	}
+	else{
+		printk(KERN_ERR "get_swap_info_from_folio: folio is not anon or shmem\n");
+		BUG_ON(1);
+	}
+	trace_get_swap_info_from_folio(folio, si, *index, *backing_size, *vma, folio_test_anon(folio), folio_is_shmem(folio));
+	return si;
 }
 //returns the actual si set
 /* Return values for set_swap_info_for_folio:
  *  1: Successfully set swap info
- *  0: No VMA found for folio
- * -1: Lock contention, need to retry
+ *  0: No VMA found for folio or skip_si
  */
-static int set_swap_info_for_folio(struct folio *folio, struct swap_info_struct *si, pgoff_t* folio_index, bool* skip_si, unsigned long* vm_start, unsigned long* vm_end, struct swap_info_struct **actual_si_out)
+static int set_swap_info_for_folio(struct folio *folio, struct vm_area_struct *vma, struct swap_info_struct *si, struct swap_info_struct **actual_si_out)
 {
-	struct vma_rmap_data data = {
-		.si = si,
-		.index = 0,
-		.has_vma = false,
-		.vm_start = 0,
-		.vm_end = 0,
-		.skip_si = false
-
-	};
-
-	enum ttu_flags flags = TTU_BATCH_FLUSH;
-	struct rmap_walk_control rwc = {
-		.rmap_one = vma_set_swap_info,
-		.arg = &data,
-		.done = NULL,
-		.anon_lock = folio_lock_anon_vma_read,
-		.try_lock = true,	/* Use non-blocking lock attempts */
-		.contended = false,
-	};
-	if (flags & TTU_RMAP_LOCKED)
-		rmap_walk_anon_no_yield(folio, &rwc, true);
-	else
-		rmap_walk_anon_no_yield(folio, &rwc, false);
-
-	/* If lock was contended, signal caller to retry */
-	if (rwc.contended) {
-		return -1;  /* RETRY */
+	if (folio_test_anon(folio)){
+		BUG_ON(!vma);
+		unsigned long flags;
+		spin_lock_irqsave(&vma->swap_lock, flags);
+		if (!(vma->si)){
+			vma->si = si;
+			si->nr_vmas++;
+		}
+		*actual_si_out = vma->si;
+		spin_unlock_irqrestore(&vma->swap_lock, flags);
 	}
-
-	*folio_index = data.index;
-	if(!data.has_vma){
-		// printk(KERN_INFO "%s:%s:%d [CPU:%d] folio has no vma. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio,*folio_index);
-		return 0;  /* NO_VMA */
+	else if (folio_is_shmem(folio)){
+		unsigned long flags;
+		struct inode *inode = folio_inode(folio);
+		struct shmem_inode_info *shmem_inode = SHMEM_I(inode);
+		spin_lock(&shmem_inode->lock);
+		if (!shmem_inode->si){
+			shmem_inode->si = si;
+			si->nr_vmas++;
+		}
+		*actual_si_out = shmem_inode->si;
+		spin_unlock(&shmem_inode->lock);
 	}
-	if (data.skip_si){
-		*skip_si = true;
-		// printk(KERN_INFO "%s:%s:%d [CPU:%d] skipping setting si for folio. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio,*folio_index);
+	else{
+		printk(KERN_ERR "set_swap_info_for_folio: folio is not anon or shmem\n");
+		BUG_ON(1);
 	}
-	else
-	{
-		*skip_si = false;
-		*vm_start = data.vm_start;
-		*vm_end = data.vm_end;
-		// printk(KERN_INFO "%s:%s:%d [CPU:%d] set si for folio. si=%p folio=%p offset=%d\n",__FILE__,__func__,__LINE__,smp_processor_id(),data.si,folio,*folio_index);
-	}
-	*actual_si_out = data.si;
 	return 1;  /* SUCCESS */
 }
 #endif
@@ -1604,21 +1559,33 @@ static int set_swap_info_for_folio(struct folio *folio, struct swap_info_struct 
 #ifdef CONFIG_SWAP_VMA
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
 {
-	pgoff_t folio_index;
-	unsigned long vm_start, vm_end;
-	struct swap_info_struct *si = get_swap_info_from_folio(folio, &folio_index, &vm_start, &vm_end);
+	unsigned long folio_index;
+	unsigned long backing_size = 0;
+	#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+	unsigned long backing_pages = 0;
+	unsigned long desired_pages = 0;
+	#endif
+	struct vm_area_struct *vma = NULL;
+	struct swap_info_struct *si = get_swap_info_from_folio(folio, &vma, &folio_index, &backing_size);
 	struct swap_info_struct *next;
 
 #else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 {
-	struct swap_info_struct *si, *next;
+	struct swap_info_struct *si = NULL, *next;
 #endif
 	int order = swap_entry_order(entry_order);
 	unsigned long size = 1 << order;
 	long avail_pgs;
 	int n_ret = 0;
 	int node;
+	#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+	if (backing_size) {
+		backing_pages = DIV_ROUND_UP(backing_size, PAGE_SIZE);
+		/* include one header page */
+		desired_pages = backing_pages + 1;
+	}
+	#endif
 	// fast path folio has si so his place is reserved
 	#ifdef CONFIG_SWAP_VMA
 	if(si){
@@ -1628,26 +1595,25 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 					n_goal, swp_entries, order, folio_index);
 			put_swap_device(si);
 			#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-			if (folio_index > si->max){
-				trace_get_swap_pages_enlarge(si, folio_index, vm_start, vm_end, 0, si->max);
+			if (folio_index > si->pages){
+				trace_get_swap_pages_enlarge(si, folio_index, backing_size, 0, si->pages);
 				/* Convert VMA size from bytes to pages, then add 1 for header */
-				/* This matches mkswap_create_file which uses vma_size + PAGE_SIZE */
-				unsigned long vma_size_bytes = vm_end - vm_start;
-				unsigned long vma_size_pages = (vma_size_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+				/* This matches mkswap_create_file which uses vma_size rounded up + header */
+				unsigned long vma_size_pages = backing_pages ? backing_pages : DIV_ROUND_UP(backing_size, PAGE_SIZE);
 				/* Total pages needed: VMA pages + 1 header page */
-				unsigned long new_total_pages = vma_size_pages + 1;
-				trace_get_swap_pages_enlarge(si, folio_index, vm_start, vm_end, vma_size_bytes, new_total_pages);
+				unsigned long new_total_pages = desired_pages ? desired_pages : (vma_size_pages + 1);
+				trace_get_swap_pages_enlarge(si, folio_index, backing_size, vma_size_pages, new_total_pages);
 				/* Only enlarge if the requested size is larger than current */
-				if (new_total_pages > si->max) {
-					trace_get_swap_pages_loop_action("calling mkswap_enlarge_file", si, 0, new_total_pages);
+				if (new_total_pages > si->pages) {
+					trace_get_swap_pages_loop_action("calling mkswap_enlarge_file", si, si->type, 0, new_total_pages);
 					int ret = mkswap_enlarge_file(si, new_total_pages);
-					trace_get_swap_pages_loop_action("mkswap_enlarge_file returned", si, ret, si->max);
+					trace_get_swap_pages_loop_action("mkswap_enlarge_file returned", si, si->type, ret, si->pages);
 					if (ret < 0) {
-						trace_get_swap_pages_loop_action("ERROR enlarge failed", si, ret, 0);
+						trace_get_swap_pages_loop_action("ERROR enlarge failed", si, si->type, ret, 0);
 						pr_warn("mkswap: failed to enlarge swap file: %d (vma_size=%lu bytes, %lu pages, new_total=%lu pages, current_max=%lu)\n",
-							ret, vma_size_bytes, vma_size_pages, new_total_pages, si->max);
+							ret, backing_size, vma_size_pages, new_total_pages, si->pages);
 					} else {
-						trace_get_swap_pages_loop_action("enlarge SUCCESS", si, si->max, 0);
+						trace_get_swap_pages_loop_action("enlarge SUCCESS", si, si->type, si->pages, 0);
 					}
 				}
 			}
@@ -1657,23 +1623,22 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 		}
 	}
 	#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-	else if (vm_end - vm_start >= PAGE_SIZE)
+	else if (backing_size >= PAGE_SIZE)
 	{
 		/* Check if a swap_info_struct already exists for this VMA range */
 		struct swap_info_struct *existing_si = NULL;
 		bool found_existing = false;
 		
-		trace_get_swap_pages_create_check(vm_start, vm_end, false);
+		trace_get_swap_pages_create_check(backing_size, false);
 		/* First check: quick check with swap_lock */
 		spin_lock(&swap_lock);
 		plist_for_each_entry(existing_si, &swap_active_head, list) {
 			/* Check for existing swap with matching VMA range (even if not yet attached) */
-			if (existing_si->vm_start == vm_start &&
-			    existing_si->vm_end == vm_end) {
+			if (existing_si->pages == desired_pages) {
 				/* Found existing swap for this VMA - use it */
 				found_existing = true;
 				spin_unlock(&swap_lock);
-				trace_get_swap_pages_create_check(vm_start, vm_end, true);
+				trace_get_swap_pages_create_check(backing_size, true);
 				/* Continue with normal allocation path - the existing si will be found there */
 				goto skip_create;
 			}
@@ -1681,52 +1646,51 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 		spin_unlock(&swap_lock);
 		
 		if (!found_existing) {
-			trace_get_swap_pages_loop_action("no existing swap, locking swapon_mutex", NULL, 0, 0);
+			trace_get_swap_pages_loop_action("no existing swap, locking swapon_mutex", NULL, 0, 0, 0);
 			/* Serialize swap file creation with swapon_mutex to prevent duplicates */
 			mutex_lock(&swapon_mutex);
-			trace_get_swap_pages_loop_action("acquired swapon_mutex", NULL, 0, 0);
+			trace_get_swap_pages_loop_action("acquired swapon_mutex", NULL, 0, 0, 0);
 			
 			/* Double-check: another thread might have created it while we waited for mutex */
 			spin_lock(&swap_lock);
 			plist_for_each_entry(existing_si, &swap_active_head, list) {
-				if (existing_si->vm_start == vm_start &&
-				    existing_si->vm_end == vm_end) {
+				if (existing_si->pages == desired_pages) {
 					/* Found existing swap - another thread created it */
 					found_existing = true;
 					spin_unlock(&swap_lock);
 					mutex_unlock(&swapon_mutex);
-					trace_get_swap_pages_create_check(vm_start, vm_end, true);
+					trace_get_swap_pages_create_check(backing_size, true);
 					goto skip_create;
 				}
 			}
 			spin_unlock(&swap_lock);
 			
 			if (!found_existing) {
-				unsigned long vma_size = (vm_end - vm_start);
 				char swap_path[256] = ""; /* Not used for virtual swap, kept for compatibility */
 				
-				trace_get_swap_pages_create_result(vm_start, vm_end, vma_size, -1);
+				trace_get_swap_pages_create_result(backing_size, -1);
 				/* mkswap_create_file will acquire swapon_mutex again around enable_swap_info,
 				 * but we already hold it, so we need to handle nested locking or restructure.
 				 * For now, we'll release it before calling and let mkswap_create_file handle it.
 				 * But this creates a window... better to pass a flag or restructure.
 				 */
-				int ret = mkswap_create_file(vma_size + PAGE_SIZE, swap_path, sizeof(swap_path),
-							     vm_start, vm_end, true);
+				/* Round backing_size up to pages and add one header page */
+				unsigned long create_size = desired_pages ? desired_pages * PAGE_SIZE : backing_size + PAGE_SIZE;
+				int ret = mkswap_create_file(create_size, swap_path, sizeof(swap_path), backing_size, true);
 				mutex_unlock(&swapon_mutex);
-				trace_get_swap_pages_create_result(vm_start, vm_end, vma_size, ret);
+				trace_get_swap_pages_create_result(backing_size, ret);
 				if (ret < 0) {
-					trace_get_swap_pages_loop_action("ERROR swap creation failed", NULL, ret, 0);
+					trace_get_swap_pages_loop_action("ERROR swap creation failed", NULL, 0, ret, 0);
 					pr_err("mkswap: failed to create and activate virtual swap: %d\n", ret);
 					return ret;
 				}
 			} else {
 				mutex_unlock(&swapon_mutex);
-				trace_get_swap_pages_loop_action("found existing swap in double-check", NULL, 0, 0);
+				trace_get_swap_pages_loop_action("found existing swap in double-check", NULL, 0, 0, 0);
 			}
 		}
 skip_create:
-		trace_get_swap_pages_loop_action("skip_create path", NULL, 0, 0);
+		trace_get_swap_pages_loop_action("skip_create path", NULL, 0, 0, 0);
 	}
 	#endif
 	#endif
@@ -1745,68 +1709,48 @@ skip_create:
 
 start_over:
 	node = numa_node_id();
-	bool skip_si = false;
 	trace_get_swap_pages_loop_start(node, n_goal, order);
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
-		trace_get_swap_pages_loop_iter(si, si->pages, swap_usage_in_pages(si), si->max, si->prio);
+		trace_get_swap_pages_loop_iter(si, si->pages, swap_usage_in_pages(si), si->pages, si->prio);
 		#ifdef CONFIG_SWAP_VMA
 		if (si->nr_vmas > 0) {
-			trace_get_swap_pages_loop_action("SKIP nr_vmas>0", si, si->nr_vmas, 0);
+			trace_get_swap_pages_loop_action("SKIP nr_vmas>0", si, si->type, si->nr_vmas, 0);
 			continue;
 		}
-retry_set_swap_info:
+		if (si->pages != backing_pages) {
+			trace_get_swap_pages_loop_action("SKIP max!=backing_pages", si, si->type, si->max, backing_pages);
+			continue;
+		}
 		struct swap_info_struct *actual_si = NULL;
-		trace_get_swap_pages_loop_action("calling set_swap_info_for_folio", si, 0, 0);
-		int set_swap_status = set_swap_info_for_folio(folio, si, &folio_index, &skip_si, &vm_start, &vm_end, &actual_si);
-		trace_get_swap_pages_loop_action("set_swap_info_for_folio returned", si, set_swap_status, skip_si);
+		trace_get_swap_pages_loop_action("calling set_swap_info_for_folio", si, si->type, 0, 0);
+		int set_swap_status = set_swap_info_for_folio(folio, vma, si, &actual_si);
+		trace_get_swap_pages_loop_action("set_swap_info_for_folio returned", si, si->type, set_swap_status,0);
 		
 		/* Handle return values:
-		 * -1: Lock contention, retry after releasing spinlock briefly
-		 *  0: No VMA found
-		 *  1: Successfully got swap info
+		 *  0: No VMA found or skip_si
+		 *  1: Got a swap info might not be the same as we tried to set
 		 */
-		if (set_swap_status == -1) {
-			trace_get_swap_pages_loop_action("RETRY lock contention", si, 0, 0);
-			/* Lock was contended, release spinlock and retry */
-			spin_unlock(&swap_avail_lock);
-			cpu_relax();
-			spin_lock(&swap_avail_lock);
-			/* Check if si is still valid after releasing the lock */
-			if (plist_node_empty(&si->avail_lists[node]))
-				goto start_over;
-			goto retry_set_swap_info;
-		}
-		
+
 		if (set_swap_status == 0) {
-			trace_get_swap_pages_loop_action("SKIP no VMA found", si, 0, 0);
+			trace_get_swap_pages_loop_action("SKIP no VMA found", si, si->type, 0, 0);
 			/* No VMA found for this folio */
 			continue;
 		}
-		
+
 		/* set_swap_status == 1: Successfully retrieved swap info */
-		if (skip_si) {
-			trace_get_swap_pages_loop_action("SKIP skip_si=true", si, 0, 0);
-			continue;
-		}
-		if (si == actual_si){
-			si->nr_vmas++;
-			si->vm_start = vm_start;
-			si->vm_end = vm_end;
-			BUG_ON(!vm_start || !vm_end);
-			trace_get_swap_pages_loop_action("set si info", si, si->nr_vmas, vm_start);
-		}
-		else{
+		BUG_ON(!backing_size);
+		if (si != actual_si){
 			si = actual_si;
-			trace_get_swap_pages_loop_action("switched to actual_si", actual_si, actual_si ? actual_si->type : -1, 0);
+			trace_get_swap_pages_loop_action("switched to actual_si", actual_si, actual_si ? actual_si->type : 0, actual_si ? actual_si->type : -1, 0);
 		}
 		#endif
 		spin_unlock(&swap_avail_lock);
-		trace_get_swap_pages_loop_action("trying get_swap_device_info", si, si->type, 0);
+		trace_get_swap_pages_loop_action("trying get_swap_device_info", NULL, 0, 0, 0);
 		if (get_swap_device_info(si)) {
 			lockdep_assert_not_held(&si->lock);
-			trace_get_swap_pages_loop_action("got swap device info, calling scan_swap_map_slots", si, 0, 0);
+			trace_get_swap_pages_loop_action("got swap device info, calling scan_swap_map_slots", si, si->type, 0, 0);
 			#ifndef CONFIG_SWAP_VMA
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order);
@@ -1814,7 +1758,7 @@ retry_set_swap_info:
 			n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
 					n_goal, swp_entries, order, folio_index);
 			#endif
-			trace_get_swap_pages_loop_action("scan_swap_map_slots returned", si, n_ret, 0);
+			trace_get_swap_pages_loop_action("scan_swap_map_slots returned", si, si->type, n_ret, 0);
 			put_swap_device(si);
 			if (n_ret || size > 1)
 				goto check_out;
@@ -1822,7 +1766,7 @@ retry_set_swap_info:
 		#ifdef CONFIG_SWAP_VMA
 		else
 		{
-			trace_get_swap_pages_loop_action("ERROR failed getting swap info", si, 0, 0);
+			trace_get_swap_pages_loop_action("ERROR failed getting swap info", NULL, 0, 0, 0);
 			printk(KERN_INFO "%s:%s:%d [CPU:%d] failed getting swap info. BUG si=%p folio=%p",__FILE__,__func__,__LINE__,smp_processor_id(),si,folio);
 		}
 		#endif
@@ -1838,46 +1782,27 @@ retry_set_swap_info:
 		 * still in the swap_avail_head list then try it, otherwise
 		 * start over if we have not gotten any slots.
 		 */
-		trace_get_swap_pages_loop_action("checking if next is empty", next, 0, 0);
+		trace_get_swap_pages_loop_action("checking if next is empty", next, next ? next->type : 0, 0, 0);
 		if (plist_node_empty(&next->avail_lists[node])) {
-			trace_get_swap_pages_loop_action("next is empty, starting over", NULL, 0, 0);
+			trace_get_swap_pages_loop_action("next is empty, starting over", NULL, 0, 0, 0);
 			goto start_over;
 		}
 	}
 
 	spin_unlock(&swap_avail_lock);
-	trace_get_swap_pages_loop_action("LOOP_END no swap found", NULL, 0, 0);
+	trace_get_swap_pages_loop_action("LOOP_END no swap found", NULL, 0, 0, 0);
 
 check_out:
-	trace_get_swap_pages_loop_action("CHECK_OUT", si, n_ret, n_goal);
+	trace_get_swap_pages_loop_action("CHECK_OUT", NULL, 0, n_ret, n_goal);
 	if (n_ret < n_goal)
 		atomic_long_add((long)(n_goal - n_ret) * size,
 				&nr_swap_pages);
 noswap:
-	trace_get_swap_pages_loop_action("EXIT", si, n_ret, 0);
+	trace_get_swap_pages_loop_action("EXIT", NULL, 0, n_ret, 0);
 	trace_get_swap_pages(n_ret, si, swp_offset(swp_entries[0]),swp_type(swp_entries[0]));
 	return n_ret;
 }
-#ifdef CONFIG_SWAP_VMA
-int get_avail_swap_info_count(void){
-	int count = 0;
-	struct swap_info_struct *si, *next;
-	int node = numa_node_id();
-	spin_lock(&swap_avail_lock);
-	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
-		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
-		if (si->nr_vmas > 0)
-			continue;
-		if (get_swap_device_info(si)) {
-			put_swap_device(si);
-			count++;
-		}
-	}
-	spin_unlock(&swap_avail_lock);
-	return count;
-}
-EXPORT_SYMBOL_GPL(get_avail_swap_info_count);
-#endif
+
 static struct swap_info_struct *_swap_info_get(swp_entry_t entry)
 {
 	struct swap_info_struct *si;
@@ -3280,7 +3205,7 @@ static void wait_for_allocation(struct swap_info_struct *si)
  * skipping header writes and syncs for faster activation.
  */
 static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
-			      unsigned long vm_start, unsigned long vm_end,
+			      unsigned long backing_size,
 			      bool swapon_mutex_held)
 {
 	struct swap_info_struct *si;
@@ -3302,7 +3227,7 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 	int ret = 0;
 	unsigned int nofs_flags = 0;
 
-	trace_mkswap_create_file_entry(size, vm_start, vm_end, swapon_mutex_held, swap_file_count);
+	trace_mkswap_create_file_entry(size, backing_size, swapon_mutex_held, swap_file_count);
 
 	BUG_ON(swap_file_count + 1 >= MAX_SWAPFILES);
 
@@ -3561,15 +3486,6 @@ static int mkswap_create_file(unsigned long size, char *path, size_t path_size,
 		goto bad_swap;
 	}
 	trace_mkswap_create_file_step("zswap initialized", 0, 0, NULL);
-
-	/* Set VMA range before enabling swap so duplicates can be detected */
-	#ifdef CONFIG_SWAP_VMA
-	if (vm_start && vm_end) {
-		si->vm_start = vm_start;
-		si->vm_end = vm_end;
-		trace_mkswap_create_file_step("set VMA range", vm_start, vm_end, NULL);
-	}
-	#endif
 
 	/* Enable the swap with cluster_info and zswap initialized */
 	trace_mkswap_create_file_step("enabling swap info", swapon_mutex_held, prio, NULL);
@@ -4054,7 +3970,8 @@ out:
  * Core fast swapoff function that takes swap_info_struct directly.
  * Can be called from VMA free context or from pathname-based swapoff.
  */
-static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
+static int mkswap_swapoff_fast_si(struct swap_info_struct *p,
+				  bool disable_slots_cache)
 {
 	unsigned char *swap_map;
 	unsigned long *zeromap;
@@ -4069,6 +3986,7 @@ static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
 	struct list_head *mmlist_p;
 	int err = 0;
 	unsigned long usage_pages;
+	bool slots_cache_locked = false;
 
 	// printk(KERN_INFO "mkswap_swapoff_fast_si: START type=%d pages=%lu flags=0x%lx\n",
 	       //    p ? p->type : -1, p ? p->pages : 0, p ? p->flags : 0);
@@ -4114,7 +4032,10 @@ static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
 
 	wait_for_allocation(p);
 
-	disable_swap_slots_cache_lock();
+	if (disable_slots_cache) {
+		disable_swap_slots_cache_lock();
+		slots_cache_locked = true;
+	}
 
 	set_current_oom_origin();
 
@@ -4145,7 +4066,8 @@ static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
 			// printk(KERN_ERR "mkswap_swapoff_fast_si: unuse_mm_fast failed err=%d\n", err);
 			mmput(prev_mm);
 			clear_current_oom_origin();
-			reenable_swap_slots_cache_unlock();
+			if (slots_cache_locked)
+				reenable_swap_slots_cache_unlock();
 			/* re-insert swap space back into swap_list */
 			reinsert_swap_info(p);
 			return err;
@@ -4200,7 +4122,8 @@ static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
 
 	clear_current_oom_origin();
 
-	reenable_swap_slots_cache_unlock();
+	if (slots_cache_locked)
+		reenable_swap_slots_cache_unlock();
 
 	/*
 	 * Since swap is VMA-attached and we've:
@@ -4340,88 +4263,59 @@ static int mkswap_swapoff_fast_si(struct swap_info_struct *p)
 
 /*
  * Called from VMA free path when a VMA using a swap file is freed.
- * Decrements nr_vmas and calls swapoff if this was the last VMA.
+ * Swap off immediately when usage drops to zero for non-shmem VMAs.
  */
-void mkswap_swapoff_on_vma_free(struct swap_info_struct *si)
+void mkswap_swapoff_on_vma_free(struct swap_info_struct *si,
+				struct vm_area_struct *vma)
 {
-	int should_swapoff = 0;
-	int old_nr_vmas;
+	bool try_swapoff;
+	unsigned int remaining_vmas;
 
-	if (!si) {
-		// printk(KERN_WARNING "mkswap_swapoff_on_vma_free: NULL si\n");
+	if (!si || !vma)
+		return;
+
+	spin_lock(&swap_avail_lock);
+	if (si->nr_vmas > 0)
+		si->nr_vmas--;
+	remaining_vmas = si->nr_vmas;
+	spin_unlock(&swap_avail_lock);
+
+	try_swapoff = !remaining_vmas &&
+		      !vma_is_shmem(vma) &&
+		      (si->flags & SWP_WRITEOK) &&
+		      !swap_usage_in_pages(si);
+	if (!try_swapoff)
+		return;
+
+	/*
+	 * Take the swap device off the allocation lists first so that
+	 * folio_alloc_swap() cannot race and allocate from it while we
+	 * re-check the usage count.
+	 */
+	spin_lock(&si->lock);
+	del_from_avail_list(si, true);
+	spin_unlock(&si->lock);
+
+	if (!swap_usage_in_pages(si)) {
+		/* Keep it off-list but allow fast swapoff to proceed. */
+		spin_lock(&si->lock);
+		si->flags |= SWP_WRITEOK;
+		spin_unlock(&si->lock);
+		/*
+		 * swap slots cache is unused with CONFIG_SWAP_VMA, so avoid
+		 * taking swap_slots_cache_enable_mutex while holding
+		 * mm->mmap_lock.
+		 */
+		mkswap_swapoff_fast_si(si, false);
 		return;
 	}
 
-	/* Decrement nr_vmas and check if we should swapoff */
-	spin_lock(&swap_avail_lock);
-	old_nr_vmas = si->nr_vmas;
-	if (si->nr_vmas > 0) {
-		si->nr_vmas--;
-		if (si->nr_vmas == 0)
-			should_swapoff = 1;
-	}
-	spin_unlock(&swap_avail_lock);
-
-	// printk(KERN_INFO "mkswap_swapoff_on_vma_free: type=%d old_nr_vmas=%d new_nr_vmas=%d should_swapoff=%d\n",
-	    //    si->type, old_nr_vmas, si->nr_vmas, should_swapoff);
-
-	/* If this was the last VMA, trigger swapoff */
-	if (should_swapoff) {
-		// printk(KERN_INFO "mkswap_swapoff_on_vma_free: Last VMA freed, triggering swapoff\n");
-		/* Use workqueue to avoid calling swapoff from VMA free context */
-		/* For now, call directly but this could be deferred */
-		mkswap_swapoff_fast_si(si);
-	}
+	/* Usage changed meanwhile, put it back on the allocation lists. */
+	spin_lock(&si->lock);
+	add_to_avail_list(si, true);
+	spin_unlock(&si->lock);
 }
 
-static int mkswap_swapoff_fast(const char __user *specialfile)
-{
-	struct swap_info_struct *p = NULL;
-	struct file *victim;
-	struct address_space *mapping;
-	struct filename *pathname;
-	int err, found = 0;
-
-	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
-
-	BUG_ON(!current->mm);
-
-	pathname = getname(specialfile);
-	if (IS_ERR(pathname))
-		return PTR_ERR(pathname);
-
-	victim = file_open_name(pathname, O_RDWR|O_LARGEFILE, 0);
-	err = PTR_ERR(victim);
-	if (IS_ERR(victim))
-		goto out;
-
-	mapping = victim->f_mapping;
-	spin_lock(&swap_lock);
-	plist_for_each_entry(p, &swap_active_head, list) {
-		if (p->flags & SWP_WRITEOK) {
-			if (p->swap_file->f_mapping == mapping) {
-				found = 1;
-				break;
-			}
-		}
-	}
-	spin_unlock(&swap_lock);
-
-	if (!found) {
-		err = -EINVAL;
-		goto out_dput;
-	}
-
-	/* Call the core function */
-	err = mkswap_swapoff_fast_si(p);
-
-out_dput:
-	filp_close(victim, NULL);
-out:
-	putname(pathname);
-	return err;
-}
 #endif
 
 SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
@@ -4670,6 +4564,9 @@ static int swap_show(struct seq_file *swap, void *v)
 	file = si->swap_file;
 
 	len = seq_file_path(swap, file, " \t\n\\");
+	spin_lock(&swap_avail_lock);
+	unsigned int nr_vmas = si->nr_vmas;
+	spin_unlock(&swap_avail_lock);
 	seq_printf(swap, "%*s%s\t%lu\t%s%lu\t%s%lu\t%s%d\t%d\n",
 			len < 40 ? 40 - len : 1, " ",
 			S_ISBLK(file_inode(file)->i_mode) ?
@@ -4677,7 +4574,13 @@ static int swap_show(struct seq_file *swap, void *v)
 			bytes, bytes < 10000000 ? "\t" : "",
 			inuse, inuse < 10000000 ? "\t" : "",
 			max, max < 10000000 ? "\t" : "",
-			si->prio, si->nr_vmas);
+			si->prio,
+			#ifdef CONFIG_VMA_RECLAIM
+			nr_vmas);
+			#else
+			0);
+			#endif
+			
 	// print si-flags
 	// seq_puts(swap,"flags:\n");
 	// for (int i = 0; i < 13; i++) {
@@ -5481,7 +5384,9 @@ void si_swapinfo(struct sysinfo *val)
 static int __swap_duplicate(swp_entry_t entry, unsigned char usage, int nr)
 {
 	struct swap_info_struct *si;
+	#ifndef CONFIG_SWAP_VMA
 	struct swap_cluster_info *ci;
+	#endif
 	unsigned long offset;
 	unsigned char count;
 	unsigned char has_cache;
