@@ -103,7 +103,9 @@ static inline struct anon_vma *anon_vma_alloc(void)
 		 */
 		anon_vma->root = anon_vma;
 	}
-
+	#ifdef CONFIG_SWAP_VMA
+	spin_lock_init(&anon_vma->swap_lock);
+	#endif
 	return anon_vma;
 }
 
@@ -204,7 +206,15 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 			goto out_enomem_free_avc;
 		anon_vma->num_children++; /* self-parent link for new root */
 		allocated = anon_vma;
+	#ifdef CONFIG_SWAP_VMA
+		anon_vma->base_vm_offset = vma->vm_pgoff;
 	}
+	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
+	trace_find_mergeable_anon_vma(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
+	#else
+	}
+	#endif // CONFIG_SWAP_VMA
+
 
 	anon_vma_lock_write(anon_vma);
 	/* page_table_lock to protect against threads */
@@ -327,6 +337,61 @@ int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
 }
 
 /*
+ * When we allocate a brand new anon_vma for the child during fork(),
+ * mirror that layout into the parent as well.  The intent is to keep the
+ * original root anon_vma as a pure root (active_vmas == 0) while both the
+ * parent and child each use their own child anon_vma hanging off that root.
+ */
+static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
+{
+	struct anon_vma *orig = pvma->anon_vma;
+	struct anon_vma *anon_vma;
+	struct anon_vma_chain *avc;
+
+	if (!orig)
+		return 0;
+
+	mmap_assert_locked(pvma->vm_mm);
+
+	anon_vma = anon_vma_alloc();
+	if (!anon_vma)
+		goto out_error;
+
+	anon_vma->num_active_vmas++;
+#ifdef CONFIG_SWAP_VMA
+	anon_vma->base_vm_offset = pvma->vm_pgoff;
+	anon_vma->end_vm_offset = pvma->vm_end >> PAGE_SHIFT;
+#endif
+
+	avc = anon_vma_chain_alloc(GFP_KERNEL);
+	if (!avc)
+		goto out_error_free_anon_vma;
+
+	anon_vma->root = orig->root;
+	anon_vma->parent = orig;
+	get_anon_vma(anon_vma->root);
+
+	pvma->anon_vma = anon_vma;
+
+	anon_vma_lock_write(anon_vma);
+	anon_vma_chain_link(pvma, avc, anon_vma);
+	anon_vma->parent->num_children++;
+	anon_vma_unlock_write(anon_vma);
+
+	if (orig->num_active_vmas)
+		orig->num_active_vmas--;
+	else
+		WARN_ON_ONCE(1);
+
+	return 0;
+
+out_error_free_anon_vma:
+	put_anon_vma(anon_vma);
+out_error:
+	return -ENOMEM;
+}
+
+/*
  * Attach vma to its own anon_vma, as well as to the anon_vmas that
  * the corresponding VMA in the parent process is attached to.
  * Returns 0 on success, non-zero on failure.
@@ -361,6 +426,11 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 	if (!anon_vma)
 		goto out_error;
 	anon_vma->num_active_vmas++;
+	#ifdef CONFIG_SWAP_VMA
+	anon_vma->base_vm_offset = vma->vm_pgoff;
+	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
+	trace_anon_vma_fork(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
+	#endif
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
 	if (!avc)
 		goto out_error_free_anon_vma;
@@ -384,7 +454,15 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 	anon_vma->parent->num_children++;
 	anon_vma_unlock_write(anon_vma);
 
+	error = anon_vma_mirror_parent(pvma);
+	if (error)
+		goto out_error_mirror_parent;
+
 	return 0;
+
+out_error_mirror_parent:
+	unlink_anon_vmas(vma);
+	return error;
 
  out_error_free_anon_vma:
 	put_anon_vma(anon_vma);
@@ -1232,6 +1310,19 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
 	WRITE_ONCE(folio->mapping, anon_vma);
 }
 
+static struct anon_vma *anon_vma_select_shared(struct anon_vma *anon_vma,
+					       swp_entry_t swp)
+{
+#ifdef CONFIG_SWAP
+	if (!non_swap_entry(swp)) {
+		struct swap_info_struct *si = swp_swap_info(swp);
+		BUG_ON(!si);
+		return si->anon_vma;
+	}
+#endif
+	return anon_vma->root;
+}
+
 /**
  * __folio_set_anon - set up a new anonymous rmap for a folio
  * @folio:	The folio to set up the new anonymous rmap for.
@@ -1240,7 +1331,8 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
  * @exclusive:	Whether the folio is exclusive to the process.
  */
 static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
-			     unsigned long address, bool exclusive)
+			     unsigned long address, bool exclusive,
+			     swp_entry_t swp)
 {
 	struct anon_vma *anon_vma = vma->anon_vma;
 
@@ -1250,8 +1342,10 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 * If the folio isn't exclusive to this vma, we must use the _oldest_
 	 * possible anon_vma for the folio mapping!
 	 */
-	if (!exclusive)
-		anon_vma = anon_vma->root;
+	if (!exclusive){
+		anon_vma = anon_vma_select_shared(anon_vma, swp);
+		BUG_ON(!anon_vma);
+	}
 
 	/*
 	 * page_idle does a lockless/optimistic rmap scan on folio->mapping.
@@ -1407,7 +1501,36 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
 	WARN_ON_ONCE(true);
 #endif
 }
-
+#ifdef CONFIG_SWAP_VMA
+bool folio_move_from_anon_rmap_one(struct folio *folio, struct vm_area_struct *vma, unsigned long address, void *arg)
+{
+	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
+	while (page_vma_mapped_walk(&pvmw)) {
+		if (pvmw.pte) {
+			pte_t pte = ptep_get(pvmw.pte);
+			pte_t new_pte = pte_mkold(pte);
+			ptep_set(pvmw.pte, new_pte);
+		}
+	}
+	return true;
+}
+bool check_anon_vma_movable_to(struct vm_area_struct *vma, void *arg)
+{
+	// first check if this is the orig VMA. skip if so
+	return vma->anon_vma == ((struct anon_vma *)arg)->anon_vma;
+}
+void folio_move_from_anon_rmap(struct folio *folio, struct vm_area_struct *orig)
+{
+	rmap_walk_control rwc = {
+		.rmap_one = folio_move_from_anon_rmap_one,
+		.arg = orig,
+		.done = folio_not_mapped,
+		.anon_lock = folio_lock_anon_vma_read,
+		.invalid_vma = check_anon_vma_movable_to,
+	};
+	rmap_walk(folio, &rwc);
+}
+#endif // CONFIG_SWAP_VMA
 /**
  * folio_add_new_anon_rmap - Add mapping to a new anonymous folio.
  * @folio:	The folio to add the mapping to.
@@ -1424,7 +1547,7 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
  * If the folio is pmd-mappable, it is accounted as a THP.
  */
 void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
-		unsigned long address, rmap_t flags)
+		unsigned long address, rmap_t flags, swp_entry_t swp)
 {
 	const int nr = folio_nr_pages(folio);
 	const bool exclusive = flags & RMAP_EXCLUSIVE;
@@ -1441,7 +1564,7 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 	 */
 	if (!folio_test_swapbacked(folio) && !(vma->vm_flags & VM_DROPPABLE))
 		__folio_set_swapbacked(folio);
-	__folio_set_anon(folio, vma, address, exclusive);
+	__folio_set_anon(folio, vma, address, exclusive, swp);
 
 	if (likely(!folio_test_large(folio))) {
 		/* increment count (starts at -1) */

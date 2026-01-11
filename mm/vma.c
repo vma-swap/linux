@@ -1903,8 +1903,19 @@ struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma)
 	next = vma_iter_load(&vmi);
 	if (next) {
 		anon_vma = reusable_anon_vma(next, vma, next);
-		if (anon_vma)
-			return anon_vma;
+		#ifdef CONFIG_SWAP_VMA
+		//if the next vma's anon_vma has an si then it means the swapfile must grow back but we dont do that for now
+		if (anon_vma) {
+			bool has_si = false;
+			spin_lock(&anon_vma->swap_lock);
+			has_si = anon_vma->si != NULL;
+			spin_unlock(&anon_vma->swap_lock);
+			trace_find_mergeable_anon_vma(vma, anon_vma, has_si);
+			if (!has_si)
+				return anon_vma;
+		}
+		#endif
+		return anon_vma;
 	}
 
 	prev = vma_prev(&vmi);
