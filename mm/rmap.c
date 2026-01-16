@@ -81,6 +81,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/tlb.h>
 #include <trace/events/migrate.h>
+#include <trace/events/anon_vma.h>
+#undef CREATE_TRACE_POINTS
 
 #include "internal.h"
 
@@ -103,7 +105,7 @@ static inline struct anon_vma *anon_vma_alloc(void)
 		 */
 		anon_vma->root = anon_vma;
 	}
-
+	xarray_init(&anon_vma->xpages);
 	return anon_vma;
 }
 
@@ -204,6 +206,9 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 			goto out_enomem_free_avc;
 		anon_vma->num_children++; /* self-parent link for new root */
 		allocated = anon_vma;
+		anon_vma->base_vm_offset = vma->vm_pgoff;
+	}
+	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
 	}
 
 	anon_vma_lock_write(anon_vma);
@@ -327,6 +332,61 @@ int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
 }
 
 /*
+ * When we allocate a brand new anon_vma for the child during fork(),
+ * mirror that layout into the parent as well.  The intent is to keep the
+ * original root anon_vma as a pure root (active_vmas == 0) while both the
+ * parent and child each use their own child anon_vma hanging off that root.
+ */
+static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
+{
+	struct anon_vma *orig = pvma->anon_vma;
+	struct anon_vma *anon_vma;
+	struct anon_vma_chain *avc;
+
+	if (!orig)
+		return 0;
+
+	mmap_assert_locked(pvma->vm_mm);
+
+	anon_vma = anon_vma_alloc();
+	if (!anon_vma)
+		goto out_error;
+	
+	anon_vma->num_active_vmas++;
+	anon_vma->base_vm_offset = pvma->vm_pgoff;
+	anon_vma->end_vm_offset = pvma->vm_end >> PAGE_SHIFT;
+
+	avc = anon_vma_chain_alloc(GFP_KERNEL);
+	if (!avc)
+		goto out_error_free_anon_vma;
+
+	anon_vma->root = orig->root;
+	anon_vma->parent = orig;
+	get_anon_vma(anon_vma->root);
+
+	pvma->anon_vma = anon_vma;
+
+	anon_vma_lock_write(anon_vma);
+	anon_vma_chain_link(pvma, avc, anon_vma);
+	anon_vma->parent->num_children++;
+	anon_vma_unlock_write(anon_vma);
+
+	if (orig->num_active_vmas)
+		orig->num_active_vmas--;
+	else
+		WARN_ON_ONCE(1);
+	trace_anon_vma_mirror_parent(pvma, anon_vma, orig,
+		anon_vma->base_vm_offset, anon_vma->end_vm_offset);
+	return 0;
+
+out_error_free_anon_vma:
+	put_anon_vma(anon_vma);
+out_error:
+	BUG_ON(1);
+	return -ENOMEM;
+}
+
+/*
  * Attach vma to its own anon_vma, as well as to the anon_vmas that
  * the corresponding VMA in the parent process is attached to.
  * Returns 0 on success, non-zero on failure.
@@ -361,6 +421,9 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 	if (!anon_vma)
 		goto out_error;
 	anon_vma->num_active_vmas++;
+	anon_vma->base_vm_offset = vma->vm_pgoff;
+	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
+	trace_anon_vma_fork(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
 	if (!avc)
 		goto out_error_free_anon_vma;
@@ -384,7 +447,15 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 	anon_vma->parent->num_children++;
 	anon_vma_unlock_write(anon_vma);
 
+	error = anon_vma_mirror_parent(pvma);
+	if (error)
+		goto out_error_mirror_parent;
+
 	return 0;
+
+out_error_mirror_parent:
+	unlink_anon_vmas(vma);
+	return error;
 
  out_error_free_anon_vma:
 	put_anon_vma(anon_vma);
@@ -1262,6 +1333,7 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
 	WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
 	folio->index = linear_page_index(vma, address);
+	xa_store(&vma->xpages, folio_index(folio) - anon_vma->base_vm_offset, folio);
 }
 
 /**

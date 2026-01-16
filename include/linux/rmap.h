@@ -64,6 +64,9 @@ struct anon_vma {
 
 	/* Interval tree of private "related" vmas */
 	struct rb_root_cached rb_root;
+	unsigned long base_vm_offset; // offset of the base vm address in the anon_vma
+	unsigned long end_vm_offset; // offset of the end vm address in the anon_vma
+	struct xarray xpages;
 };
 
 /*
