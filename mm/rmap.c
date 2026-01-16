@@ -81,6 +81,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/tlb.h>
 #include <trace/events/migrate.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/events/swap.h>
 
 #include "internal.h"
 
@@ -105,6 +107,7 @@ static inline struct anon_vma *anon_vma_alloc(void)
 	}
 	#ifdef CONFIG_SWAP_VMA
 	spin_lock_init(&anon_vma->swap_lock);
+	anon_vma->si = NULL;
 	#endif
 	return anon_vma;
 }
@@ -208,9 +211,34 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 		allocated = anon_vma;
 	#ifdef CONFIG_SWAP_VMA
 		anon_vma->base_vm_offset = vma->vm_pgoff;
+		anon_vma->si = NULL; //for now we allocate SI during swap out. next we will allocate during anon_vma allocation.
 	}
 	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
-	trace_find_mergeable_anon_vma(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
+	{
+		unsigned long vma_pages;
+		struct swap_info_struct *si_alloc = NULL;
+
+		vma_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+		vma_pages = max_t(unsigned long, vma_pages, 1); /* usable pages */
+		si_alloc = swap_bin_get_for_size(vma_pages, vma_pages << PAGE_SHIFT);
+		if (si_alloc) {
+			spin_lock(&anon_vma->swap_lock);
+			if (!anon_vma->si)
+				anon_vma->si = si_alloc;
+			spin_unlock(&anon_vma->swap_lock);
+		}
+	}
+	{
+		bool has_si;
+
+		spin_lock(&anon_vma->swap_lock);
+		has_si = anon_vma->si != NULL;
+		spin_unlock(&anon_vma->swap_lock);
+		trace_find_mergeable_anon_vma(vma, anon_vma,
+					      anon_vma->base_vm_offset,
+					      anon_vma->end_vm_offset,
+					      has_si);
+	}
 	#else
 	}
 	#endif // CONFIG_SWAP_VMA
@@ -356,7 +384,7 @@ static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
 	anon_vma = anon_vma_alloc();
 	if (!anon_vma)
 		goto out_error;
-
+	
 	anon_vma->num_active_vmas++;
 #ifdef CONFIG_SWAP_VMA
 	anon_vma->base_vm_offset = pvma->vm_pgoff;
@@ -382,12 +410,14 @@ static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
 		orig->num_active_vmas--;
 	else
 		WARN_ON_ONCE(1);
-
+	trace_anon_vma_mirror_parent(pvma, anon_vma, orig,
+		anon_vma->base_vm_offset, anon_vma->end_vm_offset);
 	return 0;
 
 out_error_free_anon_vma:
 	put_anon_vma(anon_vma);
 out_error:
+	BUG_ON(1);
 	return -ENOMEM;
 }
 
@@ -1313,12 +1343,11 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
 static struct anon_vma *anon_vma_select_shared(struct anon_vma *anon_vma,
 					       swp_entry_t swp)
 {
-#ifdef CONFIG_SWAP
-	if (!non_swap_entry(swp)) {
-		struct swap_info_struct *si = swp_swap_info(swp);
-		BUG_ON(!si);
-		return si->anon_vma;
-	}
+#ifdef CONFIG_SWAP_VMA
+	struct swap_info_struct *si = swp_swap_info(swp);
+	BUG_ON(!si);
+	trace_anon_vma_select_shared(si->anon_vma);
+	return si->anon_vma;
 #endif
 	return anon_vma->root;
 }
@@ -1501,36 +1530,7 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
 	WARN_ON_ONCE(true);
 #endif
 }
-#ifdef CONFIG_SWAP_VMA
-bool folio_move_from_anon_rmap_one(struct folio *folio, struct vm_area_struct *vma, unsigned long address, void *arg)
-{
-	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
-	while (page_vma_mapped_walk(&pvmw)) {
-		if (pvmw.pte) {
-			pte_t pte = ptep_get(pvmw.pte);
-			pte_t new_pte = pte_mkold(pte);
-			ptep_set(pvmw.pte, new_pte);
-		}
-	}
-	return true;
-}
-bool check_anon_vma_movable_to(struct vm_area_struct *vma, void *arg)
-{
-	// first check if this is the orig VMA. skip if so
-	return vma->anon_vma == ((struct anon_vma *)arg)->anon_vma;
-}
-void folio_move_from_anon_rmap(struct folio *folio, struct vm_area_struct *orig)
-{
-	rmap_walk_control rwc = {
-		.rmap_one = folio_move_from_anon_rmap_one,
-		.arg = orig,
-		.done = folio_not_mapped,
-		.anon_lock = folio_lock_anon_vma_read,
-		.invalid_vma = check_anon_vma_movable_to,
-	};
-	rmap_walk(folio, &rwc);
-}
-#endif // CONFIG_SWAP_VMA
+
 /**
  * folio_add_new_anon_rmap - Add mapping to a new anonymous folio.
  * @folio:	The folio to add the mapping to.
@@ -2687,6 +2687,18 @@ EXPORT_SYMBOL_GPL(make_device_exclusive_range);
 void __put_anon_vma(struct anon_vma *anon_vma)
 {
 	struct anon_vma *root = anon_vma->root;
+	#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
+	struct swap_info_struct *si = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&anon_vma->swap_lock, flags);
+	si = anon_vma->si;
+	anon_vma->si = NULL;
+	spin_unlock_irqrestore(&anon_vma->swap_lock, flags);
+
+	if (si)
+		recycle_swapfile_to_bin(si);
+	#endif
 
 	anon_vma_free(anon_vma);
 	if (root != anon_vma && atomic_dec_and_test(&root->refcount))
@@ -3014,7 +3026,7 @@ void hugetlb_add_new_anon_rmap(struct folio *folio,
 	atomic_set(&folio->_entire_mapcount, 0);
 	atomic_set(&folio->_large_mapcount, 0);
 	folio_clear_hugetlb_restore_reserve(folio);
-	__folio_set_anon(folio, vma, address, true);
+	__folio_set_anon(folio, vma, address, true, (swp_entry_t){0});
 	SetPageAnonExclusive(&folio->page);
 }
 #endif /* CONFIG_HUGETLB_PAGE */

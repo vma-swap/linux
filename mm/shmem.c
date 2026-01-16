@@ -138,6 +138,21 @@ struct shmem_options {
 #define SHMEM_SEEN_QUOTA 32
 };
 
+#ifdef CONFIG_SWAP_VMA
+static void shmem_release_swap_info(struct shmem_inode_info *info)
+{
+	struct swap_info_struct *si;
+
+	spin_lock(&info->lock);
+	si = info->si;
+	info->si = NULL;
+	spin_unlock(&info->lock);
+
+	if (si)
+		mkswap_swapoff_on_shmem_free(si);
+}
+#endif
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static unsigned long huge_shmem_orders_always __read_mostly;
 static unsigned long huge_shmem_orders_madvise __read_mostly;
@@ -1346,6 +1361,15 @@ static void shmem_evict_inode(struct inode *inode)
 	struct shmem_inode_info *info = SHMEM_I(inode);
 	struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
 	size_t freed = 0;
+
+#ifdef CONFIG_SWAP_VMA
+	if (info->si) {
+		struct swap_info_struct *si = info->si;
+
+		info->si = NULL;
+		recycle_swapfile_to_bin(si);
+	}
+#endif
 
 	if (shmem_mapping(inode->i_mapping)) {
 		shmem_unacct_size(info->flags, inode->i_size);
@@ -3084,6 +3108,9 @@ static struct inode *__shmem_get_inode(struct mnt_idmap *idmap,
 	inode->i_generation = get_random_u32();
 	info = SHMEM_I(inode);
 	memset(info, 0, (char *)inode - (char *)info);
+	#ifdef CONFIG_SWAP_VMA
+	info->si = NULL;
+	#endif
 	spin_lock_init(&info->lock);
 	atomic_set(&info->stop_eviction, 0);
 	info->seals = F_SEAL_SEAL;
@@ -5853,6 +5880,23 @@ static struct file *__shmem_file_setup(struct vfsmount *mnt, const char *name,
 	}
 	inode->i_flags |= i_flags;
 	inode->i_size = size;
+#ifdef CONFIG_SWAP_VMA
+	{
+		unsigned long pages = DIV_ROUND_UP(size, PAGE_SIZE);
+		struct swap_info_struct *si;
+
+		pages = max_t(unsigned long, pages, 1); /* usable pages */
+		si = swap_bin_get_for_size(pages, size);
+		if (si) {
+			struct shmem_inode_info *info = SHMEM_I(inode);
+
+			spin_lock(&info->lock);
+			if (!info->si)
+				info->si = si;
+			spin_unlock(&info->lock);
+		}
+	}
+#endif
 	clear_nlink(inode);	/* It is unlinked */
 	res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
 	if (!IS_ERR(res))

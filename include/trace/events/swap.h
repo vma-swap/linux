@@ -555,46 +555,46 @@ TP_fast_assign(
 TP_printk("vmf=%p vma=%p start=%lx end=%lx faddr=%lx prev_faddr=%lx hits=%d win=%d.",
           __entry->vmf, __entry->vma, __entry->start, __entry->end, __entry->faddr, __entry->prev_faddr, __entry->hits, __entry->win)
 );
-TRACE_EVENT(commit_merge,
-    TP_PROTO(struct vma_merge_struct *vmg),
-    TP_ARGS(vmg),
-    TP_STRUCT__entry(
-        __field(unsigned long, vmg_ptr)
-        __field(unsigned long, vma_ptr)
-        __field(unsigned long, vma_si_ptr)
-        __field(unsigned long, prev_ptr)
-        __field(unsigned long, prev_si_ptr)
-        __field(unsigned long, next_ptr)
-        __field(unsigned long, next_si_ptr)
-        __field(unsigned long, start)
-        __field(unsigned long, end)
-    ),
-    TP_fast_assign(
-        __entry->vmg_ptr = (unsigned long)vmg;
-        __entry->vma_ptr = (unsigned long)(vmg ? vmg->vma : NULL);
-        #ifdef CONFIG_SWAP_VMA
-        __entry->vma_si_ptr = (unsigned long)(vmg && vmg->vma ? vmg->vma->si : NULL);
-        __entry->prev_si_ptr = (unsigned long)(vmg && vmg->prev ? vmg->prev->si : NULL);
-        __entry->next_si_ptr = (unsigned long)(vmg && vmg->next ? vmg->next->si : NULL);
-        #endif
-        __entry->prev_ptr = (unsigned long)(vmg ? vmg->prev : NULL);
-        __entry->next_ptr = (unsigned long)(vmg ? vmg->next : NULL);
-        __entry->start = vmg ? vmg->start : 0;
-        __entry->end = vmg ? vmg->end : 0;
-    ),
-    #ifdef CONFIG_SWAP_VMA
-    TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx",
-        (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr, (void *)__entry->vma_si_ptr,
-        (void *)__entry->prev_ptr, (void *)__entry->prev_si_ptr,
-        (void *)__entry->next_ptr, (void *)__entry->next_si_ptr,
-        __entry->start, __entry->end)
-    #else
-    TP_printk("vmg=%p vma=%p prev=%p next=%p start=%lx end=%lx",
-        (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr,
-        (void *)__entry->prev_ptr, (void *)__entry->next_ptr,
-        __entry->start, __entry->end)
-    #endif /* CONFIG_SWAP_VMA */
-);
+// TRACE_EVENT(commit_merge,
+//     TP_PROTO(struct vma_merge_struct *vmg),
+//     TP_ARGS(vmg),
+//     TP_STRUCT__entry(
+//         __field(unsigned long, vmg_ptr)
+//         __field(unsigned long, vma_ptr)
+//         __field(unsigned long, vma_si_ptr)
+//         __field(unsigned long, prev_ptr)
+//         __field(unsigned long, prev_si_ptr)
+//         __field(unsigned long, next_ptr)
+//         __field(unsigned long, next_si_ptr)
+//         __field(unsigned long, start)
+//         __field(unsigned long, end)
+//     ),
+//     TP_fast_assign(
+//         __entry->vmg_ptr = (unsigned long)vmg;
+//         __entry->vma_ptr = (unsigned long)(vmg ? vmg->vma : NULL);
+//         #ifdef CONFIG_SWAP_VMA
+//         __entry->vma_si_ptr = (unsigned long)(vmg && vmg->vma ? vmg->vma->si : NULL);
+//         __entry->prev_si_ptr = (unsigned long)(vmg && vmg->prev ? vmg->prev->si : NULL);
+//         __entry->next_si_ptr = (unsigned long)(vmg && vmg->next ? vmg->next->si : NULL);
+//         #endif
+//         __entry->prev_ptr = (unsigned long)(vmg ? vmg->prev : NULL);
+//         __entry->next_ptr = (unsigned long)(vmg ? vmg->next : NULL);
+//         __entry->start = vmg ? vmg->start : 0;
+//         __entry->end = vmg ? vmg->end : 0;
+//     ),
+//     #ifdef CONFIG_SWAP_VMA
+//     TP_printk("vmg=%p vma=%p vma_si=%p prev=%p prev_si=%p next=%p next_si=%p start=%lx end=%lx",
+//         (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr, (void *)__entry->vma_si_ptr,
+//         (void *)__entry->prev_ptr, (void *)__entry->prev_si_ptr,
+//         (void *)__entry->next_ptr, (void *)__entry->next_si_ptr,
+//         __entry->start, __entry->end)
+//     #else
+//     TP_printk("vmg=%p vma=%p prev=%p next=%p start=%lx end=%lx",
+//         (void *)__entry->vmg_ptr, (void *)__entry->vma_ptr,
+//         (void *)__entry->prev_ptr, (void *)__entry->next_ptr,
+//         __entry->start, __entry->end)
+//     #endif /* CONFIG_SWAP_VMA */
+// );
 TRACE_EVENT(vma_fault, 
     TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, unsigned long old_fadrr, int new_flag, pgoff_t fault_off, pgoff_t window_start, pgoff_t window_end, size_t swap_ahead_size,struct folio* folio, int folio_ref_count),
     TP_ARGS(vma, faddr, old_fadrr, new_flag, fault_off, window_start, window_end, swap_ahead_size, folio, folio_ref_count),
@@ -657,6 +657,86 @@ TRACE_EVENT(add_to_swap_entry,
     TP_printk("folio=%p ref_count=%d.",
         __entry->folio, __entry->ref_count)
 );
+
+#ifdef CONFIG_SWAP_VMA
+TRACE_EVENT(anon_vma_fork,
+    TP_PROTO(struct vm_area_struct *vma, struct anon_vma *anon_vma,
+	     unsigned long base_vm_offset, unsigned long end_vm_offset),
+    TP_ARGS(vma, anon_vma, base_vm_offset, end_vm_offset),
+    TP_STRUCT__entry(
+        __field(struct vm_area_struct *, vma)
+        __field(struct anon_vma *, anon_vma)
+        __field(unsigned long, base_vm_offset)
+        __field(unsigned long, end_vm_offset)
+    ),
+    TP_fast_assign(
+        __entry->vma = vma;
+        __entry->anon_vma = anon_vma;
+        __entry->base_vm_offset = base_vm_offset;
+        __entry->end_vm_offset = end_vm_offset;
+    ),
+    TP_printk("vma=%p anon_vma=%p base_vm_offset=%lx end_vm_offset=%lx",
+        __entry->vma, __entry->anon_vma,
+        __entry->base_vm_offset, __entry->end_vm_offset)
+);
+TRACE_EVENT(anon_vma_mirror_parent,
+    TP_PROTO(struct vm_area_struct *vma, struct anon_vma *anon_vma, struct anon_vma *orig,
+	     unsigned long base_vm_offset, unsigned long end_vm_offset),
+    TP_ARGS(vma, anon_vma, orig, base_vm_offset, end_vm_offset),
+    TP_STRUCT__entry(
+        __field(struct vm_area_struct *, vma)
+        __field(struct anon_vma *, anon_vma)
+        __field(struct anon_vma *, orig)
+        __field(unsigned long, base_vm_offset)
+        __field(unsigned long, end_vm_offset)
+    ),
+    TP_fast_assign(
+        __entry->vma = vma;
+        __entry->anon_vma = anon_vma;
+        __entry->orig = orig;
+        __entry->base_vm_offset = base_vm_offset;
+        __entry->end_vm_offset = end_vm_offset;
+    ),
+    TP_printk("vma=%p anon_vma=%p orig=%p base_vm_offset=%lx end_vm_offset=%lx",
+        __entry->vma, __entry->anon_vma, __entry->orig,
+        __entry->base_vm_offset, __entry->end_vm_offset)
+);
+TRACE_EVENT(anon_vma_select_shared,
+    TP_PROTO(struct anon_vma *anon_vma),
+    TP_ARGS(anon_vma),
+    TP_STRUCT__entry(
+        __field(struct anon_vma *, anon_vma)
+    ),
+    TP_fast_assign(
+        __entry->anon_vma = anon_vma;
+    ),
+    TP_printk("anon_vma=%p", __entry->anon_vma)
+);
+TRACE_EVENT(find_mergeable_anon_vma,
+    TP_PROTO(struct vm_area_struct *vma, struct anon_vma *anon_vma,
+	     unsigned long base_vm_offset, unsigned long end_vm_offset,
+	     bool has_si),
+    TP_ARGS(vma, anon_vma, base_vm_offset, end_vm_offset, has_si),
+    TP_STRUCT__entry(
+        __field(struct vm_area_struct *, vma)
+        __field(struct anon_vma *, anon_vma)
+        __field(unsigned long, base_vm_offset)
+        __field(unsigned long, end_vm_offset)
+        __field(bool, has_si)
+    ),
+    TP_fast_assign(
+        __entry->vma = vma;
+        __entry->anon_vma = anon_vma;
+        __entry->base_vm_offset = base_vm_offset;
+        __entry->end_vm_offset = end_vm_offset;
+        __entry->has_si = has_si;
+    ),
+    TP_printk("vma=%p anon_vma=%p base_vm_offset=%lx end_vm_offset=%lx has_si=%d",
+        __entry->vma, __entry->anon_vma,
+        __entry->base_vm_offset, __entry->end_vm_offset,
+        __entry->has_si)
+);
+#endif /* CONFIG_SWAP_VMA */
 TRACE_EVENT(vma_fault_early_return,
     TP_PROTO(struct vm_area_struct *vma, unsigned long faddr, char* reason),
     TP_ARGS(vma, faddr, reason),
@@ -1162,7 +1242,7 @@ TRACE_EVENT(vma_swap_mergeable,
         __entry->si = si;
         __entry->mergeable = mergeable;
     ),
-    TP_printk("vma=%p si=%p mergeable=%d",
+    TP_printk("vma=%p other=%p si=%p mergeable=%d",
         __entry->vma, __entry->other, __entry->si, __entry->mergeable)
 );
 TRACE_EVENT(get_swapout_data,

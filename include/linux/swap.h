@@ -21,6 +21,7 @@ struct notifier_block;
 struct bio;
 
 struct pagevec;
+struct anon_vma;
 
 #define SWAP_FLAG_PREFER	0x8000	/* set if swap priority specified */
 #define SWAP_FLAG_PRIO_MASK	0x7fff
@@ -306,8 +307,7 @@ struct percpu_cluster {
  */
 struct swap_info_struct {
 	#ifdef CONFIG_SWAP_VMA
-	// 	spin_lock(&swap_vma_lock) protects nr_vmas, vma, and shmem_inode_info
-	int nr_vmas; // number of vmas using this swap
+	struct anon_vma *anon_vma; // anon_vma of this swap
 	#endif
 	struct percpu_ref users;	/* indicate and keep swap device valid. */
 	unsigned long	flags;		/* SWP_USED etc: see above */
@@ -419,6 +419,11 @@ extern void lru_add_drain_all(void);
 void folio_deactivate(struct folio *folio);
 void folio_mark_lazyfree(struct folio *folio);
 extern void swap_setup(void);
+#ifdef CONFIG_SWAP_VMA
+struct swap_info_struct *swap_bin_get_for_size(unsigned long pages,
+					       unsigned long backing_size);
+void recycle_swapfile_to_bin(struct swap_info_struct *si);
+#endif
 
 /* linux/mm/vmscan.c */
 extern unsigned long zone_reclaimable_pages(struct zone *zone);
@@ -506,9 +511,10 @@ extern swp_entry_t get_swap_page_of_type(int);
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order);
 #else
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order, struct folio *folio);
-#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-extern void mkswap_swapoff_on_vma_free(struct swap_info_struct *si,
-				       struct vm_area_struct *vma);
+#if defined(CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION)
+extern void mkswap_swapoff_on_anon_vma_free(struct swap_info_struct *si,
+					    struct anon_vma *anon_vma);
+extern void mkswap_swapoff_on_shmem_free(struct swap_info_struct *si);
 #endif
 #endif
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);

@@ -106,35 +106,23 @@ static inline bool are_anon_vmas_compatible(struct vm_area_struct *vma1,
 }
 
 #ifdef CONFIG_SWAP_VMA
-/*
- * Prevent merging if either side of the candidate merge has swap state
- * attached via vma->si.
- */
-static inline bool vma_swap_mergeable(struct vma_merge_struct *vmg,
-				      struct vm_area_struct *other)
+static bool vma_swap_mergeable(struct vma_merge_struct *vmg,
+			       struct vm_area_struct *other)
 {
-	struct swap_info_struct *si;
-	unsigned long irq_flags;
-	if (vmg->vma) {
-	spin_lock_irqsave(&vmg->vma->swap_lock, irq_flags);
-		si = vmg->vma->si;
-		spin_unlock_irqrestore(&vmg->vma->swap_lock, irq_flags);
-		if (si){
-			trace_vma_swap_mergeable(vmg->vma, NULL, si, false);
-			return false;
-		}
-	}
-	if (other) {
-		spin_lock_irqsave(&other->swap_lock, irq_flags);
-		si = other->si;
-		spin_unlock_irqrestore(&other->swap_lock, irq_flags);
-		if (si){
-			trace_vma_swap_mergeable(other, NULL, si, false);
-			return false;
-		}
-	}
-	trace_vma_swap_mergeable(vmg->vma, other, NULL, true);
-	return true;
+	struct swap_info_struct *si = NULL, *other_si = NULL;
+	bool mergeable;
+
+	if (vmg->anon_vma)
+		si = READ_ONCE(vmg->anon_vma->si);
+	if (other && other->anon_vma)
+		other_si = READ_ONCE(other->anon_vma->si);
+
+	mergeable = (!si && !other_si) || (si && si == other_si);
+
+	trace_vma_swap_mergeable(vmg->vma ? vmg->vma : other, other,
+				 si ? si : other_si, mergeable);
+
+	return mergeable;
 }
 #endif
 
@@ -183,10 +171,6 @@ static void init_multi_vma_prep(struct vma_prepare *vp,
 static bool can_vma_merge_before(struct vma_merge_struct *vmg)
 {
 	pgoff_t pglen = PHYS_PFN(vmg->end - vmg->start);
-	#ifdef CONFIG_SWAP_VMA
-	if (!vma_swap_mergeable(vmg, vmg->next))
-		return false;
-	#endif
 	if (is_mergeable_vma(vmg, /* merge_next = */ true) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->next->anon_vma, vmg->next)) {
 		if (vmg->next->vm_pgoff == vmg->pgoff + pglen)
@@ -1906,11 +1890,17 @@ struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma)
 		#ifdef CONFIG_SWAP_VMA
 		//if the next vma's anon_vma has an si then it means the swapfile must grow back but we dont do that for now
 		if (anon_vma) {
-			bool has_si = false;
+			unsigned long base_vm_offset, end_vm_offset;
+			bool has_si;
+
 			spin_lock(&anon_vma->swap_lock);
 			has_si = anon_vma->si != NULL;
+			base_vm_offset = anon_vma->base_vm_offset;
+			end_vm_offset = anon_vma->end_vm_offset;
 			spin_unlock(&anon_vma->swap_lock);
-			trace_find_mergeable_anon_vma(vma, anon_vma, has_si);
+			trace_find_mergeable_anon_vma(vma, anon_vma,
+						      base_vm_offset,
+						      end_vm_offset, has_si);
 			if (!has_si)
 				return anon_vma;
 		}

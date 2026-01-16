@@ -863,10 +863,6 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	memset(vma, 0, sizeof(*vma));
 	vma->vm_mm = mm;
 	vma->vm_ops = &vma_dummy_vm_ops;
-	#ifdef CONFIG_SWAP_VMA
-	vma->si=NULL;
-	spin_lock_init(&vma->swap_lock);
-	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++)
 		vma->last_fault_offset[i] = (pgoff_t)-1;  // Use -1 as sentinel for empty entries

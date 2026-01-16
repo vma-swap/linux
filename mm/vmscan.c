@@ -3433,15 +3433,16 @@ static bool get_next_vma(unsigned long mask, unsigned long size, struct mm_walk 
 static bool is_single_io_stream(struct vm_area_struct *vma){
 	unsigned long flags;
 	bool ret_val;
-	spin_lock_irqsave(&vma->swap_lock, flags);
+	spin_lock_irqsave(&vma->reclaim_lock, flags);
 	unsigned int threshold = vma->seq_hits;
 	// since we count actual seq i/o if pages are already in swap and we are seq reclaming with no i/o so for sure there is single stream from 
 	// this reclaim prespective
 	if (threshold == 0)
 		ret_val = true;
 	else
-		ret_val = (!vma->si) || (get_seq_hits(vma->si->bdev) > threshold);
-	spin_unlock_irqrestore(&vma->swap_lock, flags);
+		ret_val = (!vma->anon_vma) || (!vma->anon_vma->root) || (get_seq_hits(vma->anon_vma->root->si->bdev) > threshold);
+	// TODO: fix this maybe by travesring up... or by setting a global bdev
+	spin_unlock_irqrestore(&vma->reclaim_lock, flags);
 	return ret_val;
 }
 static void update_vma_reclaim_size(struct scan_control *sc)

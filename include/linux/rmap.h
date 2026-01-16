@@ -64,6 +64,13 @@ struct anon_vma {
 
 	/* Interval tree of private "related" vmas */
 	struct rb_root_cached rb_root;
+	// we want to move all VMA_SWAP semantics to here
+	#ifdef CONFIG_SWAP_VMA
+   	struct swap_info_struct *si; // each VMA is connected to a swap struct
+	spinlock_t swap_lock; // protects vma->si
+	unsigned long base_vm_offset; // offset of the base vm address in the anon_vma
+	unsigned long end_vm_offset; // offset of the end vm address in the anon_vma
+	#endif // CONFIG_SWAP_VMA
 };
 
 /*
@@ -244,7 +251,10 @@ void folio_add_anon_rmap_ptes(struct folio *, struct page *, int nr_pages,
 void folio_add_anon_rmap_pmd(struct folio *, struct page *,
 		struct vm_area_struct *, unsigned long address, rmap_t flags);
 void folio_add_new_anon_rmap(struct folio *, struct vm_area_struct *,
-		unsigned long address, rmap_t flags);
+		unsigned long address, rmap_t flags, swp_entry_t swp);
+#ifdef CONFIG_SWAP_VMA
+void folio_move_from_anon_rmap(struct folio *, struct vm_area_struct *orig);
+#endif // CONFIG_SWAP_VMA
 void folio_add_file_rmap_ptes(struct folio *, struct page *, int nr_pages,
 		struct vm_area_struct *);
 #define folio_add_file_rmap_pte(folio, page, vma) \

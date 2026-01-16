@@ -760,7 +760,8 @@ void exit_swap_address_space(unsigned int type)
 #ifdef CONFIG_SWAP_VMA
 // must hold ra_lock
 static bool is_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
-	bool ret_val = vma && vma->si && get_seq_hits(vma->si->bdev) > threshold;
+	bool ret_val = vma && vma->anon_vma && get_seq_hits(vma->anon_vma->root->si->bdev) > threshold;
+	// TODO: fix this maybe by travesring up... or by setting a global bdev
 	return ret_val;
 }
 #endif

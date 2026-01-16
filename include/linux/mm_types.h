@@ -784,10 +784,6 @@ struct vm_area_struct {
 	struct vma_numab_state *numab_state;	/* NUMA Balancing state */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
-#ifdef CONFIG_SWAP_VMA
-   	struct swap_info_struct *si; // each VMA is connected to a swap struct
-	spinlock_t swap_lock; // protects vma->si
-#endif
 #ifdef CONFIG_VMA_RECLAIM
 	pgoff_t last_fault_offset[CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE]; // this is used to detect sequential faults
 	int last_fault_idx; // index into last_fault_offset[]

@@ -503,10 +503,6 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	INIT_LIST_HEAD(&new->anon_vma_chain);
 	vma_numab_state_init(new);
 	dup_anon_vma_name(orig, new);
-	#ifdef CONFIG_SWAP_VMA
-	new->si=NULL;
-	spin_lock_init(&new->swap_lock);
-	#endif
 	#ifdef CONFIG_VMA_RECLAIM
 	spin_lock_init(&new->reclaim_lock);
 	#endif
@@ -515,24 +511,6 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 
 void __vm_area_free(struct vm_area_struct *vma)
 {	
-	#ifdef CONFIG_SWAP_VMA
-	if (vma->si) {
-		struct swap_info_struct *si;
-		unsigned long flags;
-
-		/* Get si pointer before clearing */
-		spin_lock_irqsave(&vma->swap_lock, flags);
-		si = vma->si;
-		vma->si = NULL;
-		spin_unlock_irqrestore(&vma->swap_lock, flags);
-
-		/* Call swapoff if this was the last VMA */
-		#ifdef CONFIG_SWAP_VMA_DYNAMIC_ALLOCATION
-		if (si)
-			mkswap_swapoff_on_vma_free(si, vma);
-		#endif
-	}
-	#endif
 	vma_numab_state_free(vma);
 	free_anon_vma_name(vma);
 	vma_lock_free(vma);
