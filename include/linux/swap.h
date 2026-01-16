@@ -47,7 +47,7 @@ static inline int current_is_kswapd(void)
  * on 32-bit-pgoff_t architectures.  And that assumes that the architecture packs
  * the type/offset into the pte as 5/27 as well.
  */
-#define MAX_SWAPFILES_SHIFT	5
+#define MAX_SWAPFILES_SHIFT	21
 
 /*
  * Use some of the swap files numbers for other purposes. This
@@ -303,7 +303,7 @@ struct swap_info_struct {
 	unsigned long	flags;		/* SWP_USED etc: see above */
 	signed short	prio;		/* swap priority of this type */
 	struct plist_node list;		/* entry in swap_active_head */
-	signed char	type;		/* strange name for an index */
+	unsigned int	type;		/* strange name for an index */
 	unsigned int	max;		/* extent of the swap_map */
 	unsigned char *swap_map;	/* vmalloc'ed array of usage counts */
 	unsigned long *zeromap;		/* kvmalloc'ed bitmap to track zero pages */
