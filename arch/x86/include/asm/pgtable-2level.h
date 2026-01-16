@@ -92,7 +92,7 @@ static inline unsigned long pte_bitop(unsigned long value, unsigned int rightshi
  *
  *   E is the exclusive marker that is not stored in swap entries.
  */
-#define SWP_TYPE_BITS 5
+#define SWP_TYPE_BITS 21
 #define _SWP_TYPE_MASK ((1U << SWP_TYPE_BITS) - 1)
 #define _SWP_TYPE_SHIFT (_PAGE_BIT_PRESENT + 1)
 #define SWP_OFFSET_SHIFT (_PAGE_BIT_PROTNONE + 1)
