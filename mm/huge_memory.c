@@ -1205,7 +1205,8 @@ static void map_anon_folio_pmd(struct folio *folio, pmd_t *pmd,
 
 	entry = mk_huge_pmd(&folio->page, vma->vm_page_prot);
 	entry = maybe_pmd_mkwrite(pmd_mkdirty(entry), vma);
-	folio_add_new_anon_rmap(folio, vma, haddr, RMAP_EXCLUSIVE);
+	folio_add_new_anon_rmap(folio, vma, haddr, RMAP_EXCLUSIVE,
+				(swp_entry_t){0});
 	folio_add_lru_vma(folio, vma);
 	set_pmd_at(vma->vm_mm, haddr, pmd, entry);
 	update_mmu_cache_pmd(vma, haddr, pmd);

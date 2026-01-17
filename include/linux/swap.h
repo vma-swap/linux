@@ -15,7 +15,6 @@
 #include <linux/page-flags.h>
 #include <uapi/linux/mempolicy.h>
 #include <asm/page.h>
-
 struct notifier_block;
 
 struct bio;
@@ -299,6 +298,10 @@ struct percpu_cluster {
  * The in-memory structure used to track swap areas.
  */
 struct swap_info_struct {
+	#ifdef CONFIG_SWAP_VMA
+	struct address_space *mapping; // mapping of the swap file. shmem/anon_vma
+	struct list_head bin_list; // membership in swap bins
+	#endif
 	struct percpu_ref users;	/* indicate and keep swap device valid. */
 	unsigned long	flags;		/* SWP_USED etc: see above */
 	signed short	prio;		/* swap priority of this type */
@@ -488,7 +491,11 @@ swp_entry_t folio_alloc_swap(struct folio *folio);
 bool folio_free_swap(struct folio *folio);
 void put_swap_folio(struct folio *folio, swp_entry_t entry);
 extern swp_entry_t get_swap_page_of_type(int);
+#ifndef CONFIG_SWAP_VMA
 extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order);
+#else
+extern int get_swap_pages(int n, swp_entry_t swp_entries[], int order, struct folio *folio);
+#endif
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t, int);
 extern int swap_duplicate(swp_entry_t);
@@ -705,6 +712,13 @@ static inline bool mem_cgroup_swap_full(struct folio *folio)
 	return vm_swap_full();
 }
 #endif
-
+#if defined(CONFIG_SWAP) && defined(CONFIG_SWAP_VMA)
+static inline struct anon_vma *get_anon_vma_from_si(struct swap_info_struct *si)
+{
+	if(si->mapping)
+		return (struct anon_vma *) (READ_ONCE(si->mapping) - PAGE_MAPPING_ANON);
+	return NULL;
+}
+#endif /* CONFIG_SWAP && CONFIG_SWAP_VMA */
 #endif /* __KERNEL__*/
 #endif /* _LINUX_SWAP_H */
