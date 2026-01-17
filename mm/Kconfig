@@ -21,6 +21,23 @@ menuconfig SWAP
 	  for so called swap devices or swap files in your kernel that are
 	  used to provide more virtual memory than the actual RAM present
 	  in your computer.  If unsure say Y.
+	  
+config SWAP_VMA
+	bool "enable swapfile arrangement by vmas"
+	depends on SWAP
+	default n
+	help
+	  This option enables the swapfile arrangement by vmas, which swaps out a folio to its corresponding offest.
+	  
+	  If unsure, say N.
+config CONFIG_ALLOC_SWAP_AT_MMAP
+	bool "enable swapfile allocation at mmap"
+	depends on SWAP_VMA
+	default n
+	help
+	  This option enables the swapfile allocation at mmap/fork time when anon_vma is created or shmem is.
+	  
+	  If unsure, say N.
 
 config ZSWAP
 	bool "Compressed cache for swap pages"

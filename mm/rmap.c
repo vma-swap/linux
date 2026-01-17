@@ -57,11 +57,13 @@
 #include <linux/sched/task.h>
 #include <linux/pagemap.h>
 #include <linux/swap.h>
+#include <linux/swapfile.h>
 #include <linux/swapops.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/ksm.h>
 #include <linux/rmap.h>
+#include <linux/xarray.h>
 #include <linux/rcupdate.h>
 #include <linux/export.h>
 #include <linux/memcontrol.h>
@@ -105,13 +107,27 @@ static inline struct anon_vma *anon_vma_alloc(void)
 		 */
 		anon_vma->root = anon_vma;
 	}
-	xarray_init(&anon_vma->xpages);
+	#ifdef CONFIG_SWAP_VMA
+	WRITE_ONCE(anon_vma->si, NULL);
+	#endif
+	xa_init(&anon_vma->xpages);
 	return anon_vma;
 }
 
 static inline void anon_vma_free(struct anon_vma *anon_vma)
 {
 	VM_BUG_ON(atomic_read(&anon_vma->refcount));
+
+#ifdef CONFIG_SWAP_VMA
+	{
+		struct swap_info_struct *si = READ_ONCE(anon_vma->si);
+
+		if (si) {
+			WRITE_ONCE(anon_vma->si, NULL);
+			recycle_si_to_bin(si);
+		}
+	}
+#endif
 
 	/*
 	 * Synchronize against folio_lock_anon_vma_read() such that
@@ -206,11 +222,28 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 			goto out_enomem_free_avc;
 		anon_vma->num_children++; /* self-parent link for new root */
 		allocated = anon_vma;
-		anon_vma->base_vm_offset = vma->vm_pgoff;
 	}
-	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
+	anon_vma->base_vm_offset = vma->vm_pgoff;
+	#ifdef CONFIG_SWAP_VMA
+	struct swap_info_struct *si_alloc = NULL;
+	struct address_space *mapping = (struct address_space *)( anon_vma + PAGE_MAPPING_ANON);
+	#ifdef CONFIG_ALLOC_SWAP_AT_MMAP
+	si_alloc = acquire_si_from_bin(vma_pages(vma), mapping);
+	if (si_alloc) {
+		if (!READ_ONCE(anon_vma->si))
+			WRITE_ONCE(anon_vma->si, si_alloc);
 	}
-
+	#endif
+	bool has_si;
+	si_alloc = READ_ONCE(anon_vma->si);
+	has_si = si_alloc != NULL;
+	trace_find_mergeable_anon_vma(vma, anon_vma,
+		anon_vma->base_vm_offset,
+		anon_vma->end_vm_offset,
+		has_si);
+	#endif
+	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(vma);
+	anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;
 	anon_vma_lock_write(anon_vma);
 	/* page_table_lock to protect against threads */
 	spin_lock(&mm->page_table_lock);
@@ -354,7 +387,8 @@ static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
 	
 	anon_vma->num_active_vmas++;
 	anon_vma->base_vm_offset = pvma->vm_pgoff;
-	anon_vma->end_vm_offset = pvma->vm_end >> PAGE_SHIFT;
+	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(pvma);
+	anon_vma->is_stack = pvma->vm_flags & VM_GROWSDOWN;
 
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
 	if (!avc)
@@ -422,7 +456,8 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 		goto out_error;
 	anon_vma->num_active_vmas++;
 	anon_vma->base_vm_offset = vma->vm_pgoff;
-	anon_vma->end_vm_offset = vma->vm_end >> PAGE_SHIFT;
+	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(vma);
+	anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;
 	trace_anon_vma_fork(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
 	if (!avc)
@@ -1303,6 +1338,19 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
 	WRITE_ONCE(folio->mapping, anon_vma);
 }
 
+static struct anon_vma *anon_vma_select_shared(struct anon_vma *anon_vma,
+					       swp_entry_t swp)
+{
+#ifdef CONFIG_SWAP_VMA
+	struct swap_info_struct *si = swp_swap_info(swp);
+	BUG_ON(!si);
+	struct anon_vma *actual_anon_vma = get_anon_vma_from_si(si);
+	trace_anon_vma_select_shared(actual_anon_vma, anon_vma, si);
+	return actual_anon_vma;
+#endif
+	return anon_vma->root;
+}
+
 /**
  * __folio_set_anon - set up a new anonymous rmap for a folio
  * @folio:	The folio to set up the new anonymous rmap for.
@@ -1311,7 +1359,8 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
  * @exclusive:	Whether the folio is exclusive to the process.
  */
 static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
-			     unsigned long address, bool exclusive)
+			     unsigned long address, bool exclusive,
+			     swp_entry_t swp)
 {
 	struct anon_vma *anon_vma = vma->anon_vma;
 
@@ -1321,8 +1370,10 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 * If the folio isn't exclusive to this vma, we must use the _oldest_
 	 * possible anon_vma for the folio mapping!
 	 */
-	if (!exclusive)
-		anon_vma = anon_vma->root;
+	if (!exclusive){
+		anon_vma = anon_vma_select_shared(anon_vma, swp);
+		BUG_ON(!anon_vma);
+	}
 
 	/*
 	 * page_idle does a lockless/optimistic rmap scan on folio->mapping.
@@ -1330,10 +1381,14 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 * the PAGE_MAPPING_ANON type identifier, otherwise the rmap code
 	 * could mistake the mapping for a struct address_space and crash.
 	 */
+	folio->index = linear_page_index(vma, address);
+	/* Store folio in anon_vma xarray; can't sleep under ptl/anon_vma walk. */
+	xa_store(&anon_vma->xpages,
+		 folio_index(folio) - anon_vma->base_vm_offset,
+		 folio,
+		 GFP_ATOMIC);
 	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
 	WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
-	folio->index = linear_page_index(vma, address);
-	xa_store(&vma->xpages, folio_index(folio) - anon_vma->base_vm_offset, folio);
 }
 
 /**
@@ -1496,7 +1551,7 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
  * If the folio is pmd-mappable, it is accounted as a THP.
  */
 void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
-		unsigned long address, rmap_t flags)
+		unsigned long address, rmap_t flags, swp_entry_t swp)
 {
 	const int nr = folio_nr_pages(folio);
 	const bool exclusive = flags & RMAP_EXCLUSIVE;
@@ -1513,7 +1568,7 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 	 */
 	if (!folio_test_swapbacked(folio) && !(vma->vm_flags & VM_DROPPABLE))
 		__folio_set_swapbacked(folio);
-	__folio_set_anon(folio, vma, address, exclusive);
+	__folio_set_anon(folio, vma, address, exclusive, swp);
 
 	if (likely(!folio_test_large(folio))) {
 		/* increment count (starts at -1) */
@@ -2839,7 +2894,7 @@ void hugetlb_add_new_anon_rmap(struct folio *folio,
 	atomic_set(&folio->_entire_mapcount, 0);
 	atomic_set(&folio->_large_mapcount, 0);
 	folio_clear_hugetlb_restore_reserve(folio);
-	__folio_set_anon(folio, vma, address, true);
+	__folio_set_anon(folio, vma, address, true, (swp_entry_t){0});
 	SetPageAnonExclusive(&folio->page);
 }
 #endif /* CONFIG_HUGETLB_PAGE */

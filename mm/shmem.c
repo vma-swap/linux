@@ -1345,6 +1345,13 @@ static void shmem_evict_inode(struct inode *inode)
 	struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
 	size_t freed = 0;
 
+#ifdef CONFIG_SWAP_VMA
+	struct swap_info_struct *si = READ_ONCE(info->si);
+	if (si)
+		recycle_si_to_bin(si);
+	WRITE_ONCE(info->si, NULL);
+	#endif
+
 	if (shmem_mapping(inode->i_mapping)) {
 		shmem_unacct_size(info->flags, inode->i_size);
 		inode->i_size = 0;
@@ -3045,6 +3052,9 @@ static struct inode *__shmem_get_inode(struct mnt_idmap *idmap,
 	inode->i_generation = get_random_u32();
 	info = SHMEM_I(inode);
 	memset(info, 0, (char *)inode - (char *)info);
+	#ifdef CONFIG_SWAP_VMA
+	WRITE_ONCE(info->si, NULL);
+	#endif
 	spin_lock_init(&info->lock);
 	atomic_set(&info->stop_eviction, 0);
 	info->seals = F_SEAL_SEAL;
@@ -5814,6 +5824,25 @@ static struct file *__shmem_file_setup(struct vfsmount *mnt, const char *name,
 	}
 	inode->i_flags |= i_flags;
 	inode->i_size = size;
+#ifdef CONFIG_SWAP_VMA
+	{
+		unsigned long pages = DIV_ROUND_UP(size, PAGE_SIZE);
+		
+		pages = max_t(unsigned long, pages, 1); /* usable pages */
+		#ifdef CONFIG_ALLOC_SWAP_AT_MMAP
+		struct swap_info_struct *si;
+		si = acquire_si_from_bin(pages, inode->i_mapping);
+		if (si) {
+			struct shmem_inode_info *info = SHMEM_I(inode);
+
+			spin_lock(&info->lock);
+			if (!READ_ONCE(info->si))
+				WRITE_ONCE(info->si, si);
+			spin_unlock(&info->lock);
+		}
+		#endif
+	}
+#endif
 	clear_nlink(inode);	/* It is unlinked */
 	res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
 	if (!IS_ERR(res))

@@ -6,6 +6,8 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <trace/events/anon_vma.h>
+
 
 struct mmap_state {
 	struct mm_struct *mm;
@@ -103,6 +105,27 @@ static inline bool are_anon_vmas_compatible(struct vm_area_struct *vma1,
 	return is_mergeable_anon_vma(vma1->anon_vma, vma2->anon_vma, NULL);
 }
 
+#ifdef CONFIG_SWAP_VMA
+static bool vma_swap_mergeable(struct vma_merge_struct *vmg,
+			       struct vm_area_struct *other)
+{
+	struct swap_info_struct *si = NULL, *other_si = NULL;
+	bool mergeable;
+
+	if (vmg->anon_vma)
+		si = READ_ONCE(vmg->anon_vma->si);
+	if (other && other->anon_vma)
+		other_si = READ_ONCE(other->anon_vma->si);
+
+	mergeable = (!si && !other_si) || (si && si == other_si);
+
+	trace_vma_swap_mergeable(vmg->vma ? vmg->vma : other, other,
+				 si ? si : other_si, mergeable);
+
+	return mergeable;
+}
+#endif
+
 /*
  * init_multi_vma_prep() - Initializer for struct vma_prepare
  * @vp: The vma_prepare struct
@@ -148,6 +171,10 @@ static void init_multi_vma_prep(struct vma_prepare *vp,
 static bool can_vma_merge_before(struct vma_merge_struct *vmg)
 {
 	pgoff_t pglen = PHYS_PFN(vmg->end - vmg->start);
+	#ifdef CONFIG_SWAP_VMA
+	if (!vma_swap_mergeable(vmg, vmg->next))
+		return false;
+	#endif
 
 	if (is_mergeable_vma(vmg, /* merge_next = */ true) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->next->anon_vma, vmg->next)) {
@@ -169,6 +196,10 @@ static bool can_vma_merge_before(struct vma_merge_struct *vmg)
  */
 static bool can_vma_merge_after(struct vma_merge_struct *vmg)
 {
+	#ifdef CONFIG_SWAP_VMA
+	if (!vma_swap_mergeable(vmg, vmg->prev))
+		return false;
+	#endif
 	if (is_mergeable_vma(vmg, /* merge_next = */ false) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->prev->anon_vma, vmg->prev)) {
 		if (vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff)
@@ -895,7 +926,6 @@ static __must_check struct vm_area_struct *vma_merge_existing_range(
 	 * the end of vmg->vma and adjust the start of vmg->next accordingly.
 	 */
 	expanded = !merge_right || merge_will_delete_vma;
-
 	if (commit_merge(vmg, adjust,
 			 merge_will_delete_vma ? vma : NULL,
 			 merge_will_delete_next ? next : NULL,
@@ -1072,7 +1102,14 @@ int vma_expand(struct vma_merge_struct *vmg)
 
 	if (commit_merge(vmg, NULL, remove_next ? next : NULL, NULL, 0, true))
 		goto nomem;
-
+	#ifdef CONFIG_SWAP_VMA
+	if (vma && vma->anon_vma){
+		vma->anon_vma->base_vm_offset = vmg->pgoff;
+		vma->anon_vma->end_vm_offset = vmg->pgoff + vma_pages(vma);
+		if (READ_ONCE(vma->anon_vma->si) && (vma->vm_start > vmg->start))
+			printk(KERN_ERR "vma_expand. grow back!: anon_vma_base_vm_offset=%lu anon_vma_end_vm_offset=%lu si=%p", vma->anon_vma->base_vm_offset, vma->anon_vma->end_vm_offset, READ_ONCE(vma->anon_vma->si));
+	}
+	#endif
 	return 0;
 
 nomem:
@@ -1862,8 +1899,27 @@ struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma)
 	next = vma_iter_load(&vmi);
 	if (next) {
 		anon_vma = reusable_anon_vma(next, vma, next);
-		if (anon_vma)
-			return anon_vma;
+		#ifdef CONFIG_SWAP_VMA
+		//if the next vma's anon_vma has an si then it means the swapfile must grow back but we dont do that for now
+		if (anon_vma) {
+			struct swap_info_struct *si;
+			unsigned long base_vm_offset, end_vm_offset;
+			bool has_si;
+
+			si = READ_ONCE(anon_vma->si);
+			has_si = si != NULL;
+			base_vm_offset = anon_vma->base_vm_offset;
+			end_vm_offset = anon_vma->end_vm_offset;
+			trace_find_mergeable_anon_vma(vma, anon_vma,
+						      base_vm_offset,
+						      end_vm_offset, has_si);
+			if (!has_si)
+				return anon_vma;
+			else
+				return NULL;
+		}
+		#endif
+		return anon_vma;
 	}
 
 	prev = vma_prev(&vmi);
@@ -2924,6 +2980,13 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				anon_vma_interval_tree_pre_update_vma(vma);
 				vma->vm_start = address;
 				vma->vm_pgoff -= grow;
+				#ifdef CONFIG_SWAP_VMA
+				if (vma->anon_vma){
+					vma->anon_vma->base_vm_offset = vma->vm_pgoff;
+					vma->anon_vma->end_vm_offset = vma->vm_pgoff + vma_pages(vma);
+					vma->anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;
+				}
+				#endif
 				/* Overwrite old entry in mtree. */
 				vma_iter_store(&vmi, vma);
 				anon_vma_interval_tree_post_update_vma(vma);

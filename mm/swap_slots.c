@@ -34,6 +34,9 @@
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
+#define TRACE_INCLUDE_PATH ../../include/trace
+#define TRACE_INCLUDE_FILE events/swap
+#include <trace/events/swap.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
 static bool	swap_slot_cache_active;
@@ -237,10 +240,13 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 		return 0;
 
 	cache->cur = 0;
+	#ifndef CONFIG_SWAP_VMA
 	if (swap_slot_cache_active)
 		cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE,
 					   cache->slots, 0);
+	#endif
 
+	trace_refill_swap_slots_cache(cache->slots, cache->nr);
 	return cache->nr;
 }
 
@@ -251,12 +257,19 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 
 	entry.val = 0;
 
+ 	#ifndef CONFIG_SWAP_VMA
 	if (folio_test_large(folio)) {
 		if (IS_ENABLED(CONFIG_THP_SWAP))
 			get_swap_pages(1, &entry, folio_order(folio));
 		goto out;
 	}
+	#endif
 
+ 	#ifdef CONFIG_SWAP_VMA
+	BUG_ON(folio_test_swapcache(folio));
+	int got_pages = get_swap_pages(1, &entry, folio_order(folio), folio);
+	goto out;
+	#endif
 	/*
 	 * Preemption is allowed here, because we may sleep
 	 * in refill_swap_slots_cache().  But it is safe, because
@@ -274,6 +287,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 repeat:
 			if (cache->nr) {
 				entry = cache->slots[cache->cur];
+				trace_swap_entry_alloc_from_cache(entry,cache->slots,cache->cur,cache->nr);
 				cache->slots[cache->cur++].val = 0;
 				cache->nr--;
 			} else if (refill_swap_slots_cache(cache)) {
@@ -284,12 +298,24 @@ repeat:
 		if (entry.val)
 			goto out;
 	}
-
+	#ifndef CONFIG_SWAP_VMA
 	get_swap_pages(1, &entry, 0);
+	#endif
+	
 out:
+#ifdef CONFIG_SWAP_VMA
+	if (got_pages){
+		if (mem_cgroup_try_charge_swap(folio, entry)) {
+			put_swap_folio(folio, entry);
+			entry.val = 0;
+		}
+	}
+#else
 	if (mem_cgroup_try_charge_swap(folio, entry)) {
 		put_swap_folio(folio, entry);
 		entry.val = 0;
 	}
+#endif
+	trace_folio_alloc_swap(folio, swp_offset(entry), swp_type(entry));
 	return entry;
 }
