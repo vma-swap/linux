@@ -528,7 +528,6 @@ static inline struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 		return NULL;
 	}
 	INIT_LIST_HEAD(&new->anon_vma_chain);
-
 	return new;
 }
 

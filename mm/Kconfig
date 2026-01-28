@@ -38,6 +38,13 @@ config CONFIG_ALLOC_SWAP_AT_MMAP
 	  This option enables the swapfile allocation at mmap/fork time when anon_vma is created or shmem is.
 	  
 	  If unsure, say N.
+config VMA_RECLAIM
+	bool "enable vma reclaim"
+	depends on SWAP_VMA
+	default n
+	help
+	  This option enables the vma reclaim, which reclaims folios in their vma order.
+	  If unsure, say N.
 
 config ZSWAP
 	bool "Compressed cache for swap pages"

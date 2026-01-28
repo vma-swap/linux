@@ -160,6 +160,36 @@ TRACE_DEFINE_ENUM(___GFP_LAST_BIT);
 
 #define DEF_PAGEFLAG_NAME(_name) { 1UL <<  PG_##_name, __stringify(_name) }
 
+#ifdef CONFIG_VMA_RECLAIM
+#define __def_pageflag_names						\
+	DEF_PAGEFLAG_NAME(locked),					\
+	DEF_PAGEFLAG_NAME(waiters),					\
+	DEF_PAGEFLAG_NAME(referenced),					\
+	DEF_PAGEFLAG_NAME(uptodate),					\
+	DEF_PAGEFLAG_NAME(dirty),					\
+	DEF_PAGEFLAG_NAME(lru),						\
+	DEF_PAGEFLAG_NAME(active),					\
+	DEF_PAGEFLAG_NAME(workingset),					\
+	DEF_PAGEFLAG_NAME(owner_priv_1),				\
+	DEF_PAGEFLAG_NAME(owner_2),					\
+	DEF_PAGEFLAG_NAME(arch_1),					\
+	DEF_PAGEFLAG_NAME(reserved),					\
+	DEF_PAGEFLAG_NAME(private),					\
+	DEF_PAGEFLAG_NAME(private_2),					\
+	DEF_PAGEFLAG_NAME(writeback),					\
+	DEF_PAGEFLAG_NAME(head),					\
+	DEF_PAGEFLAG_NAME(reclaim),					\
+	DEF_PAGEFLAG_NAME(swapbacked),					\
+	DEF_PAGEFLAG_NAME(unevictable),					\
+	DEF_PAGEFLAG_NAME(dropbehind),					\
+	DEF_PAGEFLAG_NAME(seq)					\
+IF_HAVE_PG_MLOCK(mlocked)						\
+IF_HAVE_PG_HWPOISON(hwpoison)						\
+IF_HAVE_PG_IDLE(idle)							\
+IF_HAVE_PG_IDLE(young)							\
+IF_HAVE_PG_ARCH_2(arch_2)						\
+IF_HAVE_PG_ARCH_3(arch_3)
+#else
 #define __def_pageflag_names						\
 	DEF_PAGEFLAG_NAME(locked),					\
 	DEF_PAGEFLAG_NAME(waiters),					\
@@ -187,6 +217,7 @@ IF_HAVE_PG_IDLE(idle)							\
 IF_HAVE_PG_IDLE(young)							\
 IF_HAVE_PG_ARCH_2(arch_2)						\
 IF_HAVE_PG_ARCH_3(arch_3)
+#endif
 
 #define show_page_flags(flags)						\
 	(flags) ? __print_flags(flags, "|",				\
