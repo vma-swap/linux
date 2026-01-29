@@ -74,6 +74,12 @@ struct block_device {
 #ifdef CONFIG_SECURITY
 	void			*bd_security;
 #endif
+#ifdef CONFIG_SWAP_VMA
+	sector_t		last_bdev_io;
+	unsigned int 	last_bdev_io_size_in_sectors;
+	size_t 			seq_hits;
+	spinlock_t 		swap_lock; // protects last_bdev_io
+#endif
 	/*
 	 * keep this out-of-line as it's both big and not needed in the fast
 	 * path
