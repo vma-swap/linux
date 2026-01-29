@@ -17,6 +17,8 @@ struct address_space;
 struct swap_info_struct *acquire_si_from_bin(unsigned long pages,
 					     struct address_space *mapping);
 void recycle_si_to_bin(struct swap_info_struct *si);
+extern unsigned int swap_ra_granularity;
+extern unsigned int min_swap_ra_granularity;
 #endif /* CONFIG_SWAP_VMA */
 
 #endif /* _LINUX_SWAPFILE_H */

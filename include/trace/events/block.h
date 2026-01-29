@@ -603,7 +603,7 @@ TRACE_EVENT(block_rq_remap,
 		  (unsigned long long)__entry->old_sector, __entry->nr_bios)
 );
 
-#ifdef CONFIG_SWAP_VMA_RECLAIM
+#ifdef CONFIG_VMA_RECLAIM
 TRACE_EVENT(block_log_io,
 	
 	TP_PROTO(struct block_device *bdev, sector_t last, sector_t sector, size_t size, size_t hits),
@@ -648,7 +648,7 @@ TRACE_EVENT(block_get_seq_hits,
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
 		  __entry->hits)
 );
-#endif // CONFIG_SWAP_VMA_RECLAIM
+#endif // CONFIG_VMA_RECLAIM
 #endif /* _TRACE_BLOCK_H */
 
 /* This part must be outside protection */
