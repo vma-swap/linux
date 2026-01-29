@@ -373,6 +373,10 @@ static inline struct bio *bio_alloc(struct block_device *bdev,
 
 void submit_bio(struct bio *bio);
 
+#ifdef CONFIG_VMA_RECLAIM
+size_t get_seq_hits(struct block_device *bdev);
+#endif
+
 extern void bio_endio(struct bio *);
 
 static inline void bio_io_error(struct bio *bio)

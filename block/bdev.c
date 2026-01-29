@@ -427,6 +427,9 @@ struct block_device *bdev_alloc(struct gendisk *disk, u8 partno)
 	bdev = I_BDEV(inode);
 	mutex_init(&bdev->bd_fsfreeze_mutex);
 	spin_lock_init(&bdev->bd_size_lock);
+	#ifdef CONFIG_SWAP_VMA
+	spin_lock_init(&bdev->swap_lock);
+	#endif
 	mutex_init(&bdev->bd_holder_lock);
 	atomic_set(&bdev->__bd_flags, partno);
 	bdev->bd_mapping = &inode->i_data;

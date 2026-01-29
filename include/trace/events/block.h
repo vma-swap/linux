@@ -603,6 +603,52 @@ TRACE_EVENT(block_rq_remap,
 		  (unsigned long long)__entry->old_sector, __entry->nr_bios)
 );
 
+#ifdef CONFIG_SWAP_VMA_RECLAIM
+TRACE_EVENT(block_log_io,
+	
+	TP_PROTO(struct block_device *bdev, sector_t last, sector_t sector, size_t size, size_t hits),
+
+	TP_ARGS(bdev, last, sector, size, hits),
+
+	TP_STRUCT__entry(
+		__field( dev_t,		dev		)
+		__field( sector_t,	last		)
+		__field( sector_t,	sector		)
+		__field( size_t,	size		)
+		__field( size_t,	hits		)
+	),
+
+	TP_fast_assign(
+		__entry->dev	= bdev->bd_dev;
+		__entry->last	= last;
+		__entry->sector = sector;
+		__entry->size   = size;
+		__entry->hits   = hits;
+	),
+
+	TP_printk("%d,%d %llu -> %llu size=%zu hits=%zu",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  (unsigned long long)__entry->last,
+		  (unsigned long long)__entry->sector,
+		  __entry->size,
+		  __entry->hits)
+);
+TRACE_EVENT(block_get_seq_hits,
+	TP_PROTO(struct block_device *bdev, size_t hits),
+	TP_ARGS(bdev, hits),
+	TP_STRUCT__entry(
+		__field( dev_t,		dev		)
+		__field( size_t,	hits		)
+	),
+	TP_fast_assign(
+		__entry->dev		= bdev->bd_dev;
+		__entry->hits		= hits;
+	),
+	TP_printk("%d,%d hits=%zu",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->hits)
+);
+#endif // CONFIG_SWAP_VMA_RECLAIM
 #endif /* _TRACE_BLOCK_H */
 
 /* This part must be outside protection */
