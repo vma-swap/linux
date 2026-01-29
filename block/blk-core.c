@@ -887,7 +887,7 @@ static void bio_set_ioprio(struct bio *bio)
 		bio->bi_ioprio = get_current_ioprio();
 	blkcg_set_ioprio(bio);
 }
-#ifdef CONFIG_SWAP_VMA_RECLAIM
+#ifdef CONFIG_VMA_RECLAIM
 void log_io(struct bio *bio)
 {
 	struct block_device *bdev = bio->bi_bdev;
@@ -917,7 +917,7 @@ size_t get_seq_hits(struct block_device *bdev)
 	return hits;
 }
 
-#endif // CONFIG_SWAP_VMA_RECLAIM
+#endif // CONFIG_VMA_RECLAIM
 /**
  * submit_bio - submit a bio to the block device layer for I/O
  * @bio: The &struct bio which describes the I/O
@@ -939,7 +939,7 @@ void submit_bio(struct bio *bio)
 	} else if (bio_op(bio) == REQ_OP_WRITE) {
 		count_vm_events(PGPGOUT, bio_sectors(bio));
 	}
-	#ifdef CONFIG_SWAP_VMA_RECLAIM
+	#ifdef CONFIG_VMA_RECLAIM
 	log_io(bio);
 	#endif
 	bio_set_ioprio(bio);

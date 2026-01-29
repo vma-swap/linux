@@ -82,6 +82,11 @@ unsigned long swapfile_maximum_size;
 bool swap_migration_ad_supported;
 #endif	/* CONFIG_MIGRATION */
 
+#ifdef CONFIG_VMA_RECLAIM
+unsigned int swap_ra_granularity = 32; /* 32 pages */
+unsigned int min_swap_ra_granularity = 32; /* 32 pages */
+#endif
+
 static const char Bad_file[] = "Bad swap file entry ";
 static const char Unused_file[] = "Unused swap file entry ";
 static const char Bad_offset[] = "Bad swap offset entry ";

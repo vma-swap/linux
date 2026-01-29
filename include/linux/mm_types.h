@@ -784,6 +784,12 @@ struct vm_area_struct {
 	struct vma_numab_state *numab_state;	/* NUMA Balancing state */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef CONFIG_VMA_RECLAIM
+	size_t ra_size;
+	size_t ra_hits;
+	bool try_reduce;
+	spinlock_t ra_lock; // protects read ahead fields
+#endif
 } __randomize_layout;
 
 #ifdef CONFIG_NUMA
