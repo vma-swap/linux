@@ -1134,6 +1134,51 @@ TRACE_EVENT(get_swapout_data,
     TP_printk("folio=%p vma=%p address=%lx folio_index=%d backing_size=%lu vm_start=%lu vm_end=%lu is_growsdown=%d is_shared=%d",
         __entry->folio, __entry->vma, __entry->address, __entry->folio_index, __entry->backing_size, __entry->vm_start, __entry->vm_end, __entry->is_growsdown, __entry->is_shared)
 );
+#ifdef CONFIG_VMA_RECLAIM
+TRACE_EVENT(sqwap_update_seq_reclaim_state,
+    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset,
+	     pgoff_t start, pgoff_t end, size_t swap_ahead, bool is_shmem),
+    TP_ARGS(sqwap, folio_seq, folio_offset, start, end, swap_ahead, is_shmem),
+    TP_STRUCT__entry(
+        __field(bool, folio_seq)
+        __field(unsigned long, folio_offset)
+        __field(pgoff_t, start)
+        __field(pgoff_t, end)
+        __field(size_t, swap_ahead)
+        __field(bool, is_shmem)
+    ),
+    TP_fast_assign(
+        __entry->folio_seq = folio_seq;
+        __entry->folio_offset = folio_offset;
+        __entry->start = start;
+        __entry->end = end;
+        __entry->swap_ahead = swap_ahead;
+        __entry->is_shmem = is_shmem;
+    ),
+    TP_printk("folio_seq=%d folio_offset=%lu start=%lu end=%lu swap_ahead=%zu is_shmem=%d",
+        __entry->folio_seq, __entry->folio_offset, __entry->start, __entry->end,
+        __entry->swap_ahead, __entry->is_shmem)
+);
+TRACE_EVENT(folio_update_seq_state,
+    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset,
+	     struct folio *folio, bool is_shmem),
+    TP_ARGS(sqwap, folio_seq, folio_offset, folio, is_shmem),
+    TP_STRUCT__entry(
+        __field(bool, folio_seq)
+        __field(unsigned long, folio_offset)
+        __field(struct folio *, folio)
+        __field(bool, is_shmem)
+    ),
+    TP_fast_assign(
+        __entry->folio_seq = folio_seq;
+        __entry->folio_offset = folio_offset;
+        __entry->folio = folio;
+        __entry->is_shmem = is_shmem;
+    ),
+    TP_printk("folio_seq=%d folio_offset=%lu folio=%p is_shmem=%d",
+        __entry->folio_seq, __entry->folio_offset, __entry->folio, __entry->is_shmem)
+);
+#endif /* CONFIG_VMA_RECLAIM */
 #endif /* _TRACE_SWAP_H */
 
 /* This part must be outside protection */

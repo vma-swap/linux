@@ -1407,7 +1407,7 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, un
 	struct swap_info_struct *si, *old_si = NULL;
 
 	if (folio_test_anon(folio)){
-		struct anon_vma *anon_vma = folio_get_anon_vma(folio);
+		struct anon_vma *anon_vma = folio_anon_vma(folio);
 		BUG_ON(!anon_vma);
 		if (anon_vma->is_stack)
 			*folio_offset = anon_vma->end_vm_offset - folio_index(folio);

@@ -109,7 +109,12 @@ static inline struct anon_vma *anon_vma_alloc(void)
 	}
 	#ifdef CONFIG_SWAP_VMA
 	WRITE_ONCE(anon_vma->si, NULL);
-	#endif
+	#ifdef CONFIG_VMA_RECLAIM
+	anon_vma->sqwap = kzalloc(sizeof(struct sequential_swap_context), GFP_KERNEL);
+	if (anon_vma->sqwap)
+		init_sequential_swap_context(anon_vma->sqwap);
+	#endif // CONFIG_VMA_RECLAIM
+	#endif // CONFIG_SWAP_VMA
 	xa_init(&anon_vma->xpages);
 	return anon_vma;
 }
@@ -126,6 +131,10 @@ static inline void anon_vma_free(struct anon_vma *anon_vma)
 			WRITE_ONCE(anon_vma->si, NULL);
 			recycle_si_to_bin(si);
 		}
+#ifdef CONFIG_VMA_RECLAIM
+		kfree(anon_vma->sqwap);
+		anon_vma->sqwap = NULL;
+#endif
 	}
 #endif
 

@@ -2735,6 +2735,10 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 		vmf->page = folio_file_page(folio, vmf->pgoff);
 		ret |= VM_FAULT_LOCKED;
 	}
+	#ifdef CONFIG_VMA_RECLAIM
+	folio_update_seq_state(folio_get_sqwap(folio), folio, folio_index(folio));
+	update_sqwap_state(folio_get_sqwap(folio), folio, folio_index(folio));
+	#endif
 	return ret;
 }
 
