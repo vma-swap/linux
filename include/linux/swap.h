@@ -361,23 +361,39 @@ struct swap_info_struct {
 
 #ifdef CONFIG_VMA_RECLAIM
 struct sequential_swap_context {
+	struct xarray *xa;
 	spinlock_t lock;
+	#if CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE
 	pgoff_t last_fault_offset[CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE];
 	int last_fault_idx;
+	#endif
 	size_t swap_ahead_size;
 	pgoff_t window_start;
 	pgoff_t window_end;
-	size_t seq_hits;
-	struct vm_area_struct *next_vma;
-	struct mem_cgroup *memcg;
-	struct pglist_data *pgdat;
+	size_t seq_dirty_hits;
+	struct swap_info_struct *si;
+	struct sequential_swap_context *next_sqwap;
 };
 
-void init_sequential_swap_context(struct sequential_swap_context *sqwap);
-void update_sqwap_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset);
-void folio_update_seq_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset);
+void init_sequential_swap_context(struct sequential_swap_context *sqwap, struct swap_info_struct *si, struct xarray *xa);
+void folio_update_seq_state(struct folio *folio);
 struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma);
 struct sequential_swap_context *folio_get_sqwap(struct folio *folio);
+struct folio *get_first_folio_in_seq(struct sequential_swap_context *sqwap, struct folio *folio,
+				    struct lruvec *lruvec, int type, int zone, int gen);
+struct folio *get_next_seq_candidate(struct sequential_swap_context *sqwap,
+				    struct lruvec *lruvec,
+				    int type, int zone, int gen);
+struct folio *get_next_candidate(struct sequential_swap_context *sqwap);
+struct folio *get_next_seq_candidate_for_folio(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
+struct folio *sqwap_start_new_seq_window(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
+bool sqwap_has_window(struct sequential_swap_context *sqwap);
+void sqwap_abort_window(struct sequential_swap_context *sqwap);
+void sqwap_clean_hit(struct sequential_swap_context *sqwap);
+void sqwap_dirty_hit(struct sequential_swap_context *sqwap);
+bool __is_sqwap_single_io_stream(struct sequential_swap_context *sqwap);
+bool skip_folio_from_reclaim(struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
+unsigned long get_folio_offset(struct folio *folio);
 #endif
 
 static inline swp_entry_t page_swap_entry(struct page *page)
@@ -454,6 +470,10 @@ extern unsigned long mem_cgroup_shrink_node(struct mem_cgroup *mem,
 						unsigned long *nr_scanned);
 extern unsigned long shrink_all_memory(unsigned long nr_pages);
 extern int vm_swappiness;
+#ifdef CONFIG_VMA_RECLAIM
+extern unsigned int max_swap_around;
+extern unsigned int min_swap_around;
+#endif
 long remove_mapping(struct address_space *mapping, struct folio *folio);
 
 #ifdef CONFIG_NUMA
@@ -737,7 +757,7 @@ static inline bool mem_cgroup_swap_full(struct folio *folio)
 static inline struct anon_vma *get_anon_vma_from_si(struct swap_info_struct *si)
 {
 	if(si->mapping)
-		return (struct anon_vma *) (READ_ONCE(si->mapping) - PAGE_MAPPING_ANON);
+		return (struct anon_vma *) ((void *)READ_ONCE(si->mapping) - PAGE_MAPPING_ANON);
 	return NULL;
 }
 #endif /* CONFIG_SWAP && CONFIG_SWAP_VMA */

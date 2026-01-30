@@ -2081,6 +2081,15 @@ static const struct ctl_table vm_table[] = {
 		.extra1	= SYSCTL_ZERO,
 		.extra2	= SYSCTL_INT_MAX,
 	},
+	{
+		.procname	= "max_swap_around",
+		.data		= &max_swap_around,
+		.maxlen		= sizeof(max_swap_around),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_INT_MAX,
+	},
 	#endif // CONFIG_VMA_RECLAIM
 #ifdef CONFIG_NUMA
 	{

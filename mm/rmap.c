@@ -107,15 +107,15 @@ static inline struct anon_vma *anon_vma_alloc(void)
 		 */
 		anon_vma->root = anon_vma;
 	}
+	xa_init(&anon_vma->xpages);
 	#ifdef CONFIG_SWAP_VMA
 	WRITE_ONCE(anon_vma->si, NULL);
 	#ifdef CONFIG_VMA_RECLAIM
 	anon_vma->sqwap = kzalloc(sizeof(struct sequential_swap_context), GFP_KERNEL);
 	if (anon_vma->sqwap)
-		init_sequential_swap_context(anon_vma->sqwap);
+		init_sequential_swap_context(anon_vma->sqwap, NULL, &anon_vma->xpages);
 	#endif // CONFIG_VMA_RECLAIM
 	#endif // CONFIG_SWAP_VMA
-	xa_init(&anon_vma->xpages);
 	return anon_vma;
 }
 
@@ -137,6 +137,12 @@ static inline void anon_vma_free(struct anon_vma *anon_vma)
 #endif
 	}
 #endif
+	/*
+	 * Destroy the xpages xarray before freeing. This ensures all folio
+	 * entries are cleaned up. Folios freed later don't need to remove
+	 * themselves from xpages since the xarray is already gone.
+	 */
+	xa_destroy(&anon_vma->xpages);
 
 	/*
 	 * Synchronize against folio_lock_anon_vma_read() such that
@@ -231,17 +237,25 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 			goto out_enomem_free_avc;
 		anon_vma->num_children++; /* self-parent link for new root */
 		allocated = anon_vma;
+		anon_vma->base_vm_offset = vma->vm_pgoff;
+		anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(vma);
 	}
-	anon_vma->base_vm_offset = vma->vm_pgoff;
+	else {
+		BUG_ON(anon_vma->base_vm_offset > vma->vm_pgoff);
+		anon_vma->end_vm_offset = max(anon_vma->end_vm_offset, vma->vm_pgoff + vma_pages(vma));
+	}
 	#ifdef CONFIG_SWAP_VMA
 	struct swap_info_struct *si_alloc = NULL;
-	struct address_space *mapping = (struct address_space *)( anon_vma + PAGE_MAPPING_ANON);
 	#ifdef CONFIG_ALLOC_SWAP_AT_MMAP
+	struct address_space *mapping = (struct address_space *)((void *)anon_vma + PAGE_MAPPING_ANON);
 	si_alloc = acquire_si_from_bin(vma_pages(vma), mapping);
 	if (si_alloc) {
 		if (!READ_ONCE(anon_vma->si))
 			WRITE_ONCE(anon_vma->si, si_alloc);
 	}
+	#ifdef CONFIG_VMA_RECLAIM
+	WRITE_ONCE(anon_vma->sqwap->si, READ_ONCE(anon_vma->si));
+	#endif // CONFIG_VMA_RECLAIM
 	#endif
 	bool has_si;
 	si_alloc = READ_ONCE(anon_vma->si);
@@ -251,7 +265,6 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 		anon_vma->end_vm_offset,
 		has_si);
 	#endif
-	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(vma);
 	anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;
 	anon_vma_lock_write(anon_vma);
 	/* page_table_lock to protect against threads */
@@ -395,8 +408,8 @@ static int anon_vma_mirror_parent(struct vm_area_struct *pvma)
 		goto out_error;
 	
 	anon_vma->num_active_vmas++;
-	anon_vma->base_vm_offset = pvma->vm_pgoff;
-	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(pvma);
+	anon_vma->base_vm_offset = orig->base_vm_offset;
+	anon_vma->end_vm_offset = orig->end_vm_offset;
 	anon_vma->is_stack = pvma->vm_flags & VM_GROWSDOWN;
 
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
@@ -464,8 +477,8 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 	if (!anon_vma)
 		goto out_error;
 	anon_vma->num_active_vmas++;
-	anon_vma->base_vm_offset = vma->vm_pgoff;
-	anon_vma->end_vm_offset = anon_vma->base_vm_offset + vma_pages(vma);
+	anon_vma->base_vm_offset = pvma->anon_vma->base_vm_offset;
+	anon_vma->end_vm_offset = pvma->anon_vma->end_vm_offset;
 	anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;
 	trace_anon_vma_fork(vma, anon_vma, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
 	avc = anon_vma_chain_alloc(GFP_KERNEL);
@@ -1337,7 +1350,14 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_VMA(!anon_vma, vma);
-
+	#ifdef CONFIG_SWAP_VMA
+	struct anon_vma *original_anon_vma = folio_get_anon_vma(folio);
+	// first remove from original xarray
+	xa_erase(&original_anon_vma->xpages, original_anon_vma->is_stack ? original_anon_vma->end_vm_offset - folio_pgoff(folio) : folio_pgoff(folio) - original_anon_vma->base_vm_offset);
+	put_anon_vma(original_anon_vma);
+	// now add to the new anon_vma
+	xa_store(&vma->anon_vma->xpages, vma->anon_vma->is_stack ? vma->anon_vma->end_vm_offset - folio_pgoff(folio) : folio_pgoff(folio) - vma->anon_vma->base_vm_offset, folio, GFP_ATOMIC);
+	#endif
 	anon_vma += PAGE_MAPPING_ANON;
 	/*
 	 * Ensure that anon_vma and the PAGE_MAPPING_ANON bit are written
@@ -1384,18 +1404,18 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 		BUG_ON(!anon_vma);
 	}
 
+	folio->index = linear_page_index(vma, address);
+	/* Store folio in anon_vma xarray; can't sleep under ptl/anon_vma walk. */
+	xa_store(&anon_vma->xpages,
+		 anon_vma->is_stack ? anon_vma->end_vm_offset - folio_pgoff(folio) : folio_pgoff(folio) - anon_vma->base_vm_offset,
+		 folio,
+		 GFP_ATOMIC);
 	/*
 	 * page_idle does a lockless/optimistic rmap scan on folio->mapping.
 	 * Make sure the compiler doesn't split the stores of anon_vma and
 	 * the PAGE_MAPPING_ANON type identifier, otherwise the rmap code
 	 * could mistake the mapping for a struct address_space and crash.
 	 */
-	folio->index = linear_page_index(vma, address);
-	/* Store folio in anon_vma xarray; can't sleep under ptl/anon_vma walk. */
-	xa_store(&anon_vma->xpages,
-		 folio_index(folio) - anon_vma->base_vm_offset,
-		 folio,
-		 GFP_ATOMIC);
 	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
 	WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
 }
@@ -1735,6 +1755,29 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 	 * so leave the reset to free_pages_prepare, and remember that
 	 * it's only reliable while mapped.
 	 */
+
+#ifdef CONFIG_SWAP_VMA
+	/*
+	 * Remove folio from anon_vma->xpages when fully unmapped.
+	 * Only do this for anonymous folios - file-backed folios have
+	 * their mapping pointing to address_space, not anon_vma.
+	 * Use atomic_inc_not_zero to safely get a reference in case
+	 * the anon_vma is being torn down concurrently.
+	 */
+	if (!folio_mapped(folio) && folio_test_anon(folio)) {
+		struct anon_vma *anon_vma = (struct anon_vma *)
+			((unsigned long)folio->mapping - PAGE_MAPPING_ANON);
+		rcu_read_lock();
+		if (atomic_inc_not_zero(&anon_vma->refcount)) {
+			unsigned long offset = anon_vma->is_stack ?
+				anon_vma->end_vm_offset - folio_pgoff(folio) :
+				folio_pgoff(folio) - anon_vma->base_vm_offset;
+			xa_erase(&anon_vma->xpages, offset);
+			put_anon_vma(anon_vma);
+		}
+		rcu_read_unlock();
+	}
+#endif
 
 	munlock_vma_folio(folio, vma);
 }

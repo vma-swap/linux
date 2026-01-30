@@ -181,6 +181,12 @@ struct scan_control {
 
 	/* for recording the reclaimed slab by now */
 	struct reclaim_state reclaim_state;
+	#ifdef CONFIG_VMA_RECLAIM
+	unsigned int vma_reclamation;
+	unsigned int len_sqwaps;
+	bool ignore_refs;
+	struct sequential_swap_context *sqwap_list;
+	#endif
 };
 
 #ifdef ARCH_HAS_PREFETCHW
@@ -201,6 +207,11 @@ struct scan_control {
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
 int vm_swappiness = 60;
+#ifdef CONFIG_VMA_RECLAIM
+unsigned int max_swap_around = 32768; // 128 MiB 
+unsigned int min_swap_around = 64;
+#endif
+
 
 #ifdef CONFIG_MEMCG
 
@@ -3352,7 +3363,154 @@ static bool get_next_vma(unsigned long mask, unsigned long size, struct mm_walk 
 
 	return false;
 }
+#ifdef CONFIG_VMA_RECLAIM
+static bool is_candidate_dirty(struct folio *folio)
+{
+	trace_mm_vmscan_is_candidate_dirty(folio, folio_test_swapcache(folio), folio_test_anon(folio), folio_test_swapbacked(folio), folio_test_dirty(folio), folio_test_writeback(folio));
+	return (!folio_test_swapcache(folio) && (folio_test_anon(folio) || folio_is_shmem(folio)) && folio_test_swapbacked(folio)) ||
+		(folio_test_swapcache(folio) && folio_test_dirty(folio) && !folio_test_writeback(folio));
+}
+static bool check_isolate_folio(struct lruvec *lruvec, struct folio *folio, struct scan_control *sc)
+{
+	/* swap constrained */
+	if (!(sc->gfp_mask & __GFP_IO) &&
+	    (folio_test_dirty(folio) ||
+	     (folio_test_anon(folio) && !folio_test_swapcache(folio))))
+		{
+		return false;
+	}
+	/* raced with another isolation */
+	if (!folio_test_lru(folio)) {
+		printk(KERN_DEBUG "folio_test_clear_lru failed in check_isolate_folio");
+		return false;
+	}
+	return true;
+}
 
+static void update_sqwap_reclaim_size(struct scan_control *sc)
+{
+	struct sequential_swap_context *sqwap = sc->sqwap_list;
+	while(sqwap)
+	{
+		unsigned long flags;
+		size_t sqwap_seq_dirty_hits;
+		struct sequential_swap_context *tmp_sqwap = sqwap;
+		spin_lock_irqsave(&sqwap->lock, flags);
+		sqwap_seq_dirty_hits = sqwap->seq_dirty_hits;
+		//if we had no hits this time so we should leave the size as is
+		if (sqwap_seq_dirty_hits){
+			if(!__is_sqwap_single_io_stream(sqwap))
+				sqwap->swap_ahead_size = min(sqwap->swap_ahead_size * 2, max_swap_around);
+			else
+				sqwap->swap_ahead_size = max(sqwap->swap_ahead_size / 2, min_swap_around);
+		}
+		unsigned int new_size = sqwap->swap_ahead_size;
+		// reset seq_dirty_hits before advancing to next
+		sqwap->seq_dirty_hits = 0;
+		sqwap = sqwap->next_sqwap;
+		spin_unlock_irqrestore(&tmp_sqwap->lock, flags);
+		trace_mm_vmscan_update_sqwap_reclaim_size(tmp_sqwap, new_size, sqwap_seq_dirty_hits);
+	}
+}
+static struct sequential_swap_context *get_next_sqwap_seq_reclaim(struct scan_control *sc)
+{
+	struct sequential_swap_context *sqwap = sc->sqwap_list;
+	bool ret_val = false;
+	while(sqwap)
+	{	
+		unsigned long flags;
+		struct sequential_swap_context *tmp_sqwap = sqwap;
+		spin_lock_irqsave(&sqwap->lock, flags);
+		tmp_sqwap = sqwap->next_sqwap;
+		spin_unlock_irqrestore(&sqwap->lock, flags);
+		if (ret_val)
+			return sqwap;
+		sqwap = tmp_sqwap;
+	}
+	return NULL;
+}
+static bool is_sqwap_seq_reclaiming(struct scan_control *sc, struct sequential_swap_context *sqwap_to_find)
+{
+	unsigned long flags;
+	struct sequential_swap_context *sqwap = sc->sqwap_list;
+	while(sqwap)
+	{
+		if(sqwap == sqwap_to_find)
+			return true;
+		spin_lock_irqsave(&sqwap->lock, flags);
+		struct sequential_swap_context *next_sqwap = sqwap->next_sqwap;
+		spin_unlock_irqrestore(&sqwap->lock, flags);
+		sqwap = next_sqwap;
+	}
+	return false;
+}
+// return false if sqwap is already in the list
+static bool add_to_seq_sqwap(struct scan_control *sc, struct sequential_swap_context *sqwap_to_add)
+{	struct sequential_swap_context *sqwap = sc->sqwap_list;
+	unsigned long flags;
+	while(sqwap)
+	{
+		if(sqwap == sqwap_to_add)
+			return false;
+		struct sequential_swap_context *tmp_sqwap = sqwap;
+		spin_lock_irqsave(&tmp_sqwap->lock, flags);
+		sqwap = sqwap->next_sqwap;
+		spin_unlock_irqrestore(&tmp_sqwap->lock, flags);
+	}
+	spin_lock_irqsave(&sqwap_to_add->lock, flags);
+	sqwap_to_add->next_sqwap = sc->sqwap_list;
+	spin_unlock_irqrestore(&sqwap_to_add->lock, flags);
+	sc->sqwap_list = sqwap_to_add;
+	sc->len_sqwaps++;
+	return true;
+}
+static void remove_from_seq_sqwap(struct scan_control *sc, struct sequential_swap_context *sqwap_to_remove)
+{
+	struct sequential_swap_context *sqwap = sc->sqwap_list;
+	struct sequential_swap_context *prev = NULL;
+	unsigned long flags1;
+	while(sqwap)
+	{
+		if(sqwap == sqwap_to_remove)
+		{
+			// bug if prev == sqwap
+			BUG_ON(prev == sqwap);
+			BUG_ON(&sqwap->lock == NULL);
+			if(prev){
+				BUG_ON(&prev->lock == NULL);
+				unsigned long flags2;
+				if (prev > sqwap) {
+					spin_lock_irqsave(&sqwap->lock, flags1);
+					spin_lock_irqsave_nested(&prev->lock, flags2,1);
+					prev->next_sqwap = sqwap->next_sqwap;
+					sqwap->next_sqwap = NULL;
+					spin_unlock_irqrestore(&prev->lock, flags2);
+					spin_unlock_irqrestore(&sqwap->lock, flags1);
+				} else {
+					spin_lock_irqsave(&prev->lock, flags2);
+					spin_lock_irqsave_nested(&sqwap->lock, flags1,1);
+					prev->next_sqwap = sqwap->next_sqwap;
+					sqwap->next_sqwap = NULL;
+					spin_unlock_irqrestore(&sqwap->lock, flags1);
+					spin_unlock_irqrestore(&prev->lock, flags2);
+				}
+			}
+			else
+			{
+				spin_lock_irqsave(&sqwap->lock, flags1);
+				sc->sqwap_list = sqwap->next_sqwap;
+				spin_unlock_irqrestore(&sqwap->lock, flags1);
+			}
+			sc->len_sqwaps--;
+			return;
+		}
+		prev = sqwap;
+		spin_lock_irqsave(&prev->lock, flags1);
+		sqwap = prev->next_sqwap;
+		spin_unlock_irqrestore(&prev->lock, flags1);
+	}
+}
+#endif
 static unsigned long get_pte_pfn(pte_t pte, struct vm_area_struct *vma, unsigned long addr,
 				 struct pglist_data *pgdat)
 {
@@ -4483,6 +4641,7 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
 	return true;
 }
 
+
 static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 		       int type, int tier, struct list_head *list)
 {
@@ -4509,9 +4668,18 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 		int skipped_zone = 0;
 		int zone = (sc->reclaim_idx + i) % MAX_NR_ZONES;
 		struct list_head *head = &lrugen->folios[gen][type][zone];
+		#ifdef CONFIG_VMA_RECLAIM
+		struct sequential_swap_context *sqwap = NULL;
+		int is_isolated = false;
+		#endif
 
 		while (!list_empty(head)) {
 			struct folio *folio = lru_to_folio(head);
+			#ifdef CONFIG_VMA_RECLAIM
+			trace_mm_vmscan_scan_folios(folio, folio_needs_release(folio), folio_mapping(folio), folio_test_dirty(folio));
+			is_isolated = false;
+			sc->ignore_refs = false;
+			#endif
 			int delta = folio_nr_pages(folio);
 
 			VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
@@ -4523,10 +4691,103 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 
 			if (sort_folio(lruvec, folio, sc, tier))
 				sorted += delta;
+			#ifdef CONFIG_VMA_RECLAIM
+			else if (check_isolate_folio(lruvec, folio, sc)) {
+				struct sequential_swap_context *orig_sqwap = folio_get_sqwap(folio);
+				if (is_candidate_dirty(folio) && orig_sqwap && max_swap_around){
+					if (!is_sqwap_seq_reclaiming(sc, orig_sqwap)){
+						struct sequential_swap_context *tmp_sqwap = get_next_sqwap_seq_reclaim(sc);
+						if(tmp_sqwap)
+							sqwap = tmp_sqwap;
+						else
+							sqwap = orig_sqwap;
+					}
+					else 
+						sqwap = orig_sqwap;
+					// now we swap out its entire sequential set of folios
+					struct folio *evictable_folio = NULL;
+					if (sqwap_has_window(sqwap)){
+						// new window starts from previous end
+						evictable_folio = get_next_candidate(sqwap);
+						if (skip_folio_from_reclaim(evictable_folio, lruvec, type, zone, gen))
+							evictable_folio = NULL;
+					}
+					if(!evictable_folio) {
+						//falling back to the original vma. removing the seq sqwap and using the original sqwap.
+						if (sqwap != orig_sqwap) {
+							remove_from_seq_sqwap(sc, sqwap);
+							sqwap = orig_sqwap;
+						}
+						evictable_folio = sqwap_start_new_seq_window(sqwap, folio, lruvec, type, zone, gen);
+					}
+					int seq_hits = 0;
+					while (evictable_folio && seq_hits < sqwap->swap_ahead_size) {
+						delta = folio_nr_pages(evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO((folio_lru_gen(evictable_folio) != gen), evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(evictable_folio), evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_test_active(evictable_folio), evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(evictable_folio) != type, evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_zonenum(evictable_folio) != zone, evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_memcg(evictable_folio) != lruvec_memcg(lruvec), evictable_folio);
+						VM_WARN_ON_ONCE_FOLIO(folio_lruvec(evictable_folio) != lruvec, evictable_folio);
+
+						scanned += delta;
+						if (isolate_folio(folio_lruvec(evictable_folio), evictable_folio, sc)) {
+							list_add(&evictable_folio->lru, list);
+							if (lruvec != folio_lruvec(evictable_folio))
+								BUG_ON(true);
+							isolated += delta;
+							seq_hits++;
+							if (is_candidate_dirty(evictable_folio))
+								sqwap_dirty_hit(sqwap);
+							else
+								sqwap_clean_hit(sqwap);
+							if (evictable_folio == folio)
+								is_isolated = true;
+						} else {
+							list_move(&evictable_folio->lru, &moved);
+							skipped_zone += delta;
+							break;
+						}
+						evictable_folio = get_next_seq_candidate_for_folio(sqwap, evictable_folio, lruvec, type, zone, gen);
+					}
+					if (seq_hits < sqwap->swap_ahead_size){
+						sc->ignore_refs = seq_hits * 10 >= MIN_LRU_BATCH * 6; // if 60% were dirty. refs are ignored if there is a seq rec sqwap anyway
+						sqwap_abort_window(sqwap);
+						remove_from_seq_sqwap(sc, sqwap);
+						if (!is_isolated){
+							if(isolate_folio(lruvec, folio, sc)){
+								list_add(&folio->lru, list);
+								isolated += delta;
+							}
+							else {
+								list_move(&folio->lru, &moved);
+								skipped_zone += delta;
+							}
+						}
+					}
+					else {
+						add_to_seq_sqwap(sc, sqwap);
+					}
+				}
+				else {
+					if(isolate_folio(lruvec, folio, sc)){
+						list_add(&folio->lru, list);
+						isolated += delta;
+					}
+					else {
+						list_move(&folio->lru, &moved);
+						skipped_zone += delta;
+					}
+				}
+			}
+			#else
 			else if (isolate_folio(lruvec, folio, sc)) {
 				list_add(&folio->lru, list);
 				isolated += delta;
-			} else {
+			}
+			#endif
+			else {
 				list_move(&folio->lru, &moved);
 				skipped_zone += delta;
 			}
@@ -4657,7 +4918,12 @@ static int evict_folios(struct lruvec *lruvec, struct scan_control *sc, int swap
 	if (list_empty(&list))
 		return scanned;
 retry:
+	#ifdef CONFIG_VMA_RECLAIM
+	bool ignore_references = sc->ignore_refs; //maybe set ignore_refs for every isolated batch independently
+	reclaimed = shrink_folio_list(&list, pgdat, sc, &stat, ignore_references);
+	#else
 	reclaimed = shrink_folio_list(&list, pgdat, sc, &stat, false);
+	#endif
 	sc->nr.unqueued_dirty += stat.nr_unqueued_dirty;
 	sc->nr_reclaimed += reclaimed;
 	trace_mm_vmscan_lru_shrink_inactive(pgdat->node_id,
@@ -6616,6 +6882,10 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 		.may_unmap = 1,
 		.may_swap = !!(reclaim_options & MEMCG_RECLAIM_MAY_SWAP),
 		.proactive = !!(reclaim_options & MEMCG_RECLAIM_PROACTIVE),
+		#ifdef CONFIG_VMA_RECLAIM
+		.sqwap_list = NULL,
+		.len_sqwaps = 0,
+		#endif
 	};
 	/*
 	 * Traverse the ZONELIST_FALLBACK zonelist of the current node to put
@@ -6629,6 +6899,9 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 	noreclaim_flag = memalloc_noreclaim_save();
 
 	nr_reclaimed = do_try_to_free_pages(zonelist, &sc);
+	#ifdef CONFIG_VMA_RECLAIM
+	update_sqwap_reclaim_size(&sc);
+	#endif
 
 	memalloc_noreclaim_restore(noreclaim_flag);
 	trace_mm_vmscan_memcg_reclaim_end(nr_reclaimed);

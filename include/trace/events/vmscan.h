@@ -535,6 +535,270 @@ TRACE_EVENT(mm_vmscan_throttled,
 		__entry->usec_delayed,
 		show_throttle_flags(__entry->reason))
 );
+TRACE_EVENT(mm_vmscan_isolate_folio,
+
+	TP_PROTO(struct folio *folio, int ref_count),
+	TP_ARGS(folio, ref_count),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, ref_count)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+	),
+	TP_printk("folio=%p ref_count=%d",
+		__entry->folio,
+		__entry->ref_count
+	)
+);
+#ifdef CONFIG_VMA_RECLAIM
+#include <linux/swap.h>
+TRACE_EVENT(mm_vmscan_reclaim_page,
+	TP_PROTO(struct folio *folio, int node_id, int memcg_id),
+	TP_ARGS(folio, node_id, memcg_id),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, node_id)
+		    __field(int, memcg_id)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->node_id = node_id;
+		__entry->memcg_id = memcg_id;
+	),
+	TP_printk("folio=%p node_id=%d memcg_id=%d",
+		__entry->folio,
+		__entry->node_id,
+		__entry->memcg_id)
+);
+TRACE_EVENT(mm_vmscan_shrink_folio_list,
+	TP_PROTO(struct folio *folio, int keep_locked, char* reason),
+	TP_ARGS(folio, keep_locked, reason),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+		    __field(int, keep_locked)
+		    __string(reason, reason)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->keep_locked = keep_locked;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p keep_locked=%d reason=%s",
+		__entry->folio,
+		__entry->keep_locked,
+		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_pageout,
+
+	TP_PROTO(struct folio *folio, int action, const char *reason),
+
+	TP_ARGS(folio, action, reason),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, action)
+		__string(reason, reason)
+	),
+		TP_fast_assign(
+		__entry->folio = folio;
+		__entry->action = action;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p action=%d reason=%s",
+		__entry->folio,
+		__entry->action,
+		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_is_page_cache_freeable,
+
+	TP_PROTO(struct folio *folio, int ref_count, int is_private, int is_private_2, int nr_pages),
+
+	TP_ARGS(folio, ref_count, is_private, is_private_2, nr_pages),
+
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(int, ref_count)
+		__field(int, is_private)
+		__field(int, is_private_2)
+		__field(int, nr_pages)
+	),
+
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref_count = ref_count;
+		__entry->is_private = is_private;
+		__entry->is_private_2 = is_private_2;
+		__entry->nr_pages = nr_pages;
+	),
+
+	TP_printk("folio=%p ref_count=%d is_private=%d is_private_2=%d nr_pages=%d",
+		  __entry->folio,
+		  __entry->ref_count,
+		  __entry->is_private,
+		  __entry->is_private_2,
+		  __entry->nr_pages)
+);
+TRACE_EVENT(mm_vmscan_update_sqwap_reclaim_size,
+	TP_PROTO(struct sequential_swap_context *sqwap, unsigned int new_size, size_t sqwap_seq_hits),
+	TP_ARGS(sqwap, new_size, sqwap_seq_hits),
+	TP_STRUCT__entry(
+		    __field(struct sequential_swap_context *, sqwap)
+		    __field(unsigned int, new_size)
+			__field(size_t, sqwap_seq_hits)
+	),
+	TP_fast_assign(
+		__entry->sqwap = sqwap;
+		__entry->new_size = new_size;	
+		__entry->sqwap_seq_hits = sqwap_seq_hits;
+	),
+	TP_printk("sqwap=%p new_size=%u sqwap_seq_hits=%ld",
+		__entry->sqwap,
+		__entry->new_size,
+		__entry->sqwap_seq_hits)
+);
+TRACE_EVENT(mm_vmscan_sort_folio,
+	TP_PROTO(struct folio *folio, unsigned int ref, char* reason),
+	TP_ARGS(folio, ref, reason),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+			__field(unsigned int, ref)
+			__string(reason, reason)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->ref = ref;
+		__assign_str(reason);
+	),
+	TP_printk("folio=%p ref=%u reason=%s",
+		__entry->folio,
+		__entry->ref,
+		__get_str(reason))
+);
+TRACE_EVENT(mm_vmscan_is_dirty_seq_hit,
+	TP_PROTO(struct folio *folio, bool is_swapcache, bool is_anon, bool is_swapbacked, bool is_dirty, bool is_writeback, bool is_reclaim, int refs, int seq_hits),
+	TP_ARGS(folio, is_swapcache, is_anon, is_swapbacked, is_dirty, is_writeback, is_reclaim, refs, seq_hits),
+	TP_STRUCT__entry(
+		    __field(struct folio *, folio)
+			__field(bool, is_swapcache)
+			__field(bool, is_anon)
+			__field(bool, is_swapbacked)
+			__field(bool, is_dirty)	
+			__field(bool, is_writeback)
+			__field(bool, is_reclaim)
+			__field(int, refs)
+			__field(int, seq_hits)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->is_swapcache = is_swapcache;
+		__entry->is_anon = is_anon;	
+		__entry->is_swapbacked = is_swapbacked;
+		__entry->is_dirty = is_dirty;
+		__entry->is_writeback = is_writeback;
+		__entry->is_reclaim = is_reclaim;
+		__entry->refs = refs;
+		__entry->seq_hits = seq_hits;
+	),
+	TP_printk("folio=%p is_swapcache=%d is_anon=%d is_swapbacked=%d is_dirty=%d is_writeback=%d is_reclaim=%d refs=%d seq_hits=%d",
+		__entry->folio,
+		__entry->is_swapcache,
+		__entry->is_anon,	
+		__entry->is_swapbacked,
+		__entry->is_dirty,
+		__entry->is_writeback,
+		__entry->is_reclaim,
+		__entry->refs,
+		__entry->seq_hits)
+);
+TRACE_EVENT(mm_vmscan_should_abort_scan,
+	TP_PROTO(int nr_reclaimed, int nr_to_reclaim, int order, bool root_reclaim),
+	TP_ARGS(nr_reclaimed, nr_to_reclaim, order, root_reclaim),
+	TP_STRUCT__entry(
+		__field(int, nr_reclaimed)
+		__field(int, nr_to_reclaim)
+		__field(int, order)
+		__field(bool, root_reclaim)
+	),
+	TP_fast_assign(
+		__entry->nr_reclaimed = nr_reclaimed;
+		__entry->nr_to_reclaim = nr_to_reclaim;
+		__entry->order = order;
+		__entry->root_reclaim = root_reclaim;
+	),
+	TP_printk("nr_reclaimed=%d nr_to_reclaim=%d order=%d root_reclaim=%d",
+		__entry->nr_reclaimed,
+		__entry->nr_to_reclaim,
+		__entry->order,
+		__entry->root_reclaim)
+);
+TRACE_EVENT(mm_vmscan_try_to_shrink_lruvec,
+	TP_PROTO(int delta, unsigned long scanned, long nr_to_scan),
+	TP_ARGS(delta, scanned, nr_to_scan),
+	TP_STRUCT__entry(
+		__field(int, delta)
+		__field(unsigned long, scanned)
+		__field(long, nr_to_scan)
+	),
+	TP_fast_assign(
+		__entry->delta = delta;
+		__entry->scanned = scanned;
+		__entry->nr_to_scan = nr_to_scan;
+	),
+	TP_printk("delta=%d scanned=%lu nr_to_scan=%ld",
+		__entry->delta,
+		__entry->scanned,
+		__entry->nr_to_scan)
+);
+TRACE_EVENT(mm_vmscan_scan_folios,
+	TP_PROTO(struct folio *folio, bool needs_release, struct address_space *mapping, bool is_dirty),
+	TP_ARGS(folio, needs_release, mapping, is_dirty),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(bool, needs_release)
+		__field(struct address_space *, mapping)
+		__field(bool, is_dirty)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->needs_release = needs_release;
+		__entry->mapping = mapping;
+		__entry->is_dirty = is_dirty;
+	),
+	TP_printk("folio=%p needs_release=%d mapping=%p is_dirty=%d",
+		__entry->folio,
+		__entry->needs_release,
+		__entry->mapping,
+		__entry->is_dirty)
+);
+TRACE_EVENT(mm_vmscan_is_candidate_dirty,
+	TP_PROTO(struct folio *folio, bool is_swapcache, bool is_anon, bool is_swapbacked, bool is_dirty, bool is_writeback),
+	TP_ARGS(folio, is_swapcache, is_anon, is_swapbacked, is_dirty, is_writeback),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(bool, is_swapcache)
+		__field(bool, is_anon)
+		__field(bool, is_swapbacked)
+		__field(bool, is_dirty)
+		__field(bool, is_writeback)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->is_swapcache = is_swapcache;
+		__entry->is_anon = is_anon;
+		__entry->is_swapbacked = is_swapbacked;
+		__entry->is_dirty = is_dirty;
+		__entry->is_writeback = is_writeback;
+	),
+	TP_printk("folio=%p is_swapcache=%d is_anon=%d is_swapbacked=%d is_dirty=%d is_writeback=%d",
+		__entry->folio,
+		__entry->is_swapcache,
+		__entry->is_anon,
+		__entry->is_swapbacked,
+		__entry->is_dirty,
+		__entry->is_writeback)
+);
+#endif
 #endif /* _TRACE_VMSCAN_H */
 
 /* This part must be outside protection */
