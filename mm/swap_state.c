@@ -30,6 +30,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/swap.h>
 
+#ifdef CONFIG_VMA_RECLAIM
+static struct swap_info_struct *get_si_from_vma(struct vm_area_struct *vma);
+#endif
+
 /*
  * swapper_space is a fiction, retained to simplify the path through
  * vmscan's shrink_folio_list.
@@ -383,7 +387,7 @@ struct folio *swap_cache_get_folio(swp_entry_t entry,
 			hits = SWAP_RA_HITS(ra_val);
 			if (readahead){
 				#ifdef CONFIG_VMA_RECLAIM
-				unsigned flags;
+				unsigned long flags;
 				spin_lock_irqsave(&vma->ra_lock, flags);
 				vma->ra_hits += 1;
 				spin_unlock_irqrestore(&vma->ra_lock, flags);
@@ -763,62 +767,112 @@ void exit_swap_address_space(unsigned int type)
 }
 #ifdef CONFIG_VMA_RECLAIM
 // must hold ra_lock
-static bool is_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
-	bool ret_val = vma && vma->anon_vma && get_seq_hits(vma->anon_vma->root->si->bdev) > threshold;
+static bool is_vma_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
+	if (!vma)
+		return false;
+	struct swap_info_struct *si = get_si_from_vma(vma);
+	bool ret_val = si && get_seq_hits(si->bdev) > threshold;
+	trace_is_vma_single_io_stream(vma, ret_val, threshold);
 	return ret_val;
 }
 
-void init_sequential_swap_context(struct sequential_swap_context *sqwap) {
+unsigned long get_folio_offset(struct folio *folio) {
+	struct anon_vma *anon_vma;
+	unsigned long offset;
+	if (folio_is_shmem(folio))
+		return folio_pgoff(folio);
+	anon_vma = folio_get_anon_vma(folio);
+	if (!anon_vma)
+		return ULONG_MAX; /* Folio mapping cleared, signal invalid */
+	if (anon_vma->is_stack)
+		offset = anon_vma->end_vm_offset - folio_pgoff(folio);
+	else
+		offset = folio_pgoff(folio) - anon_vma->base_vm_offset;
+	put_anon_vma(anon_vma); /* Release reference taken by folio_get_anon_vma */
+	return offset;
+}	
+
+void init_sequential_swap_context(struct sequential_swap_context *sqwap, struct swap_info_struct *si, struct xarray *xa)
+{
 	spin_lock_init(&sqwap->lock);
-	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++)
+	#if CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
 		sqwap->last_fault_offset[i] = (pgoff_t)-1;
+	}
 	sqwap->last_fault_idx = -1;
+	#endif
 	sqwap->swap_ahead_size = MIN_LRU_BATCH;
 	sqwap->window_start = 0;
 	sqwap->window_end = 0;
-	sqwap->seq_hits = 0;
-	sqwap->next_vma = NULL;
-	sqwap->memcg = NULL;
-	sqwap->pgdat = NULL;
-}
-void update_sqwap_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset){
-	unsigned long flags;
-	spin_lock_irqsave(&sqwap->lock, flags);
-	if (folio_offset >= sqwap->window_start && folio_offset <= sqwap->window_end + sqwap->swap_ahead_size) {
-		// fault inside window, reset window
-		sqwap->window_start = 0;
-		sqwap->window_end = 0;
-		sqwap->swap_ahead_size = MIN_LRU_BATCH;
-	}
-	pgoff_t start = sqwap->window_start;
-	pgoff_t end = sqwap->window_end;
-	
-	size_t swap_ahead = sqwap->swap_ahead_size;
-	spin_unlock_irqrestore(&sqwap->lock, flags);
-	trace_sqwap_update_seq_reclaim_state(sqwap, folio_test_seq(folio), folio_offset, start, end, swap_ahead, folio_is_shmem(folio));
+	sqwap->seq_dirty_hits = 0;
+	sqwap->next_sqwap = NULL;
+	WRITE_ONCE(sqwap->si, si);
+	BUG_ON(!xa);
+	sqwap->xa = xa;
 }
 
-void folio_update_seq_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset) {
+
+void folio_update_seq_state(struct folio *folio)
+{
 	unsigned long flags;
 	bool is_sequential = false;
+	pgoff_t start, end;
+	size_t swap_ahead;
+	unsigned long folio_offset;
+	int new_idx;
+	int i;
+	struct sequential_swap_context *sqwap = folio_get_sqwap(folio);
+
+	if (!sqwap)
+		return;
+
+	folio_offset = get_folio_offset(folio);
+
 	spin_lock_irqsave(&sqwap->lock, flags);
-	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
+
+	/* Seq state: detect sequential fault and update history (0 = no bookkeeping) */
+	#if CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE
+	for (i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
 		if (sqwap->last_fault_offset[i] != -1 && folio_offset == sqwap->last_fault_offset[i] + 1) {
 			is_sequential = true;
 			break;
 		}
 	}
-	// Since we test forward, we need to store backwards to maintain proper sequence
-	int new_idx = (sqwap->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
+	new_idx = (sqwap->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
 	sqwap->last_fault_idx = new_idx;
 	sqwap->last_fault_offset[new_idx] = folio_offset;
-	
 	if (is_sequential)
 		folio_set_seq(folio);
 	else
 		folio_clear_seq(folio);
+	#endif
+
+	/* Sqwap state: fault inside window resets window */
+	if (folio_offset >= sqwap->window_start && folio_offset <= sqwap->window_end + sqwap->swap_ahead_size) {
+		sqwap->window_start = 0;
+		sqwap->window_end = 0;
+		sqwap->swap_ahead_size = MIN_LRU_BATCH;
+	}
+	start = sqwap->window_start;
+	end = sqwap->window_end;
+	swap_ahead = sqwap->swap_ahead_size;
+
 	spin_unlock_irqrestore(&sqwap->lock, flags);
 	trace_folio_update_seq_state(sqwap, folio_test_seq(folio), folio_offset, folio, folio_is_shmem(folio));
+}
+
+static struct swap_info_struct *get_si_from_vma(struct vm_area_struct *vma)
+{
+	struct swap_info_struct *si = NULL;
+	if (vma_is_anonymous(vma)) {
+		if (!vma->anon_vma)
+			return NULL;
+		si = READ_ONCE(vma->anon_vma->si);
+	}
+	else if (vma_is_shmem(vma)) {
+		si = READ_ONCE(SHMEM_I(vma->vm_file->f_inode)->si);
+	}
+	return si;
 }
 
 struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma)
@@ -837,14 +891,235 @@ struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma)
 
 struct sequential_swap_context *folio_get_sqwap(struct folio *folio)
 {
-	struct sequential_swap_context *sqwap = NULL;
+	if (folio_is_shmem(folio)){
+		struct shmem_inode_info *info = SHMEM_I(folio_inode(folio));
+		if (info)
+			return info->sqwap;
+	}
+	if (folio_test_anon(folio)){
+		// Use folio_anon_vma() instead of folio_get_anon_vma() to match
+		// get_swap_info_from_folio() behavior. During reclaim the folio
+		// is locked so the anon_vma remains valid even if mapcount=0.
+		struct anon_vma *anon_vma = folio_anon_vma(folio);
+		if (anon_vma)
+			return anon_vma->sqwap;
+	}
+	return NULL;
+}
+// must hold sqwap->lock
+bool __is_sqwap_single_io_stream(struct sequential_swap_context *sqwap){
+	bool ret_val;
+	// a sqwap is single io stream if the amount of 60% dirty seq hits is higher than the window and the bdev hits is too
+	if (!READ_ONCE(sqwap->si))
+		ret_val = true;
+	else
+		ret_val = (get_seq_hits(READ_ONCE(sqwap->si)->bdev) > sqwap->seq_dirty_hits);
 
-	if (folio_is_shmem(folio))
-		return SHMEM_I(folio_inode(folio))->sqwap;
-	if (folio_test_anon(folio))
-		return folio_get_anon_vma(folio)->sqwap;
-	BUG_ON(!sqwap);
-	return sqwap;
+	trace_is_sqwap_single_io_stream(sqwap, ret_val, sqwap->seq_dirty_hits, sqwap->swap_ahead_size);
+	return ret_val;
+}
+struct folio *sqwap_start_new_seq_window(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen)
+{
+	unsigned long flags;
+	unsigned long folio_offset;
+	struct folio *first_folio = get_first_folio_in_seq(sqwap, folio, lruvec, type, zone, gen);
+	if (!first_folio)
+		return NULL;
+	folio_offset = get_folio_offset(first_folio);
+	if (folio_offset == ULONG_MAX)
+		return NULL;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	sqwap->window_start = folio_offset;
+	sqwap->window_end = folio_offset;
+	sqwap->seq_dirty_hits = 0;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+	trace_sqwap_start_new_seq_window(sqwap, first_folio, folio_offset);
+	return first_folio;
+}
+
+/*
+ * Find the previous folio at before_index - 1 in @xa. Returns %NULL if there is none
+ * or the entry is not a folio (e.g. swap or shadow).
+ * Uses RCU internally for safe xarray traversal.
+ *
+ * We must load the entry at (before_index - 1) directly; xas_prev() from an
+ * unpositioned cursor (xa_node == NULL) only decrements the index and returns
+ * NULL without walking the tree, so we would never find the previous folio.
+ */
+static struct folio *get_prev_folio_in_xarray(struct xarray *xa, unsigned long before_index)
+{
+	XA_STATE(xas, xa, before_index - 1);
+	void *entry;
+	struct folio *prev;
+
+	if (before_index == 0)
+		return NULL;
+	rcu_read_lock();
+	entry = xas_load(&xas);
+	if (entry == NULL || xa_is_internal(entry)) {
+		rcu_read_unlock();
+		trace_get_prev_folio_in_xarray(xa, before_index, NULL, 0, 0);
+		return NULL;
+	}
+	prev = (!xa_is_value(entry)) ? (struct folio *)entry : NULL;
+	rcu_read_unlock();
+	if (!prev) {
+		trace_get_prev_folio_in_xarray(xa, before_index, NULL, 0, 1);
+		return NULL;
+	}
+	unsigned long prev_index = get_folio_offset(prev);
+	trace_get_prev_folio_in_xarray(xa, before_index, prev, prev_index, 0);
+	return prev_index == before_index - 1 ? prev : NULL;
+}
+
+/*
+ * Find the next folio at after_index + 1 in @xa. Returns %NULL if there is none
+ * no next entry or the next entry is not a folio (e.g. swap or shadow).
+ * Uses RCU internally for safe xarray traversal.
+ */
+static struct folio *get_next_folio_in_xarray(struct xarray *xa, unsigned long after_index)
+{
+	XA_STATE(xas, xa, after_index + 1);
+	void *entry;
+	struct folio *next;
+	bool value;
+
+	rcu_read_lock();
+	entry = xas_next_entry(&xas, ULONG_MAX);
+	value = entry && xa_is_value(entry);
+	next = (entry && !value) ? (struct folio *)entry : NULL;
+	rcu_read_unlock();
+	
+	if (!next) {
+		trace_get_next_folio_in_xarray(xa, after_index, NULL, 0, value);
+		return NULL;
+	}
+	
+	unsigned long next_index = get_folio_offset(next);
+	trace_get_next_folio_in_xarray(xa, after_index, next, next_index, value);
+	return next_index == after_index + 1 ? next : NULL;
+}
+
+struct folio *get_next_seq_candidate_for_folio(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen)
+{
+	struct folio *next = NULL;
+	bool is_shmem = folio_is_shmem(folio);
+	bool is_anon = folio_test_anon(folio);
+	unsigned long index = get_folio_offset(folio);
+	next = get_next_folio_in_xarray(sqwap->xa, index);
+	bool skip_folio = skip_folio_from_reclaim(next, lruvec, type, zone, gen);
+	trace_get_next_seq_candidate_for_folio(folio, is_shmem, is_anon, index, next, skip_folio);
+	return skip_folio ? NULL : next;
+}
+
+/*
+ * Walk backwards in the xarray from @folio until there is no previous folio
+ * (or we hit a non-sequential one). Returns the first folio in the sequence.
+ */
+struct folio *get_first_folio_in_seq(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen)
+{
+	unsigned long index;
+	struct folio *first = folio;
+	struct folio *prev;
+
+	if (!folio)
+		return NULL;
+
+	index = get_folio_offset(folio);
+	if (index == ULONG_MAX)
+		return NULL; /* Folio mapping cleared */
+	unsigned long go_back_size = 0;
+	unsigned long go_back_limit = CONFIG_VMA_RECLAIM_GO_BACK_SIZE_MIB * 256; // calculation is in pages
+	/*
+	 * No sqwap->lock needed here - we're only reading from the xarray
+	 * which is RCU-protected. get_prev_folio_in_xarray uses rcu_read_lock
+	 * internally. Avoiding the spinlock with IRQs disabled prevents RCU stalls
+	 * when iterating through many entries.
+	 */
+	while ((prev = get_prev_folio_in_xarray(sqwap->xa, index)) != NULL) {
+		if (skip_folio_from_reclaim(prev, lruvec, type, zone, gen))
+			break;
+		first = prev;
+		index = get_folio_offset(prev);
+		if (index == ULONG_MAX)
+			break; /* Folio mapping cleared during iteration */
+		go_back_size++;
+		if (go_back_size >= go_back_limit)
+			break;
+	}
+	trace_get_first_folio_in_seq(folio, first, go_back_size, index);
+	return first;
+}
+bool skip_folio_from_reclaim(struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen){
+	if (!folio)
+		return true;
+	/*
+	 * Folio pointer from xpages could be stale if the folio was freed
+	 * but xpages wasn't cleaned up (race with anon_vma free).
+	 * Check refcount as basic validity check before accessing fields.
+	 */
+	if (!folio_ref_count(folio))
+		return true;
+	return folio_test_unevictable(folio) || \
+	folio_memcg(folio) != lruvec_memcg(lruvec) || \
+	folio_pgdat(folio) != lruvec_pgdat(lruvec) || \
+	folio_zonenum(folio) != zone || \
+	folio_lru_gen(folio) != gen || \
+	folio_is_file_lru(folio) != type || \
+	folio_test_active(folio) || \
+	folio_lruvec(folio) != lruvec;
+}
+bool sqwap_has_window(struct sequential_swap_context *sqwap)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	bool ret_val = sqwap->window_start != sqwap->window_end;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+	return ret_val;
+}
+/*
+ * Called when the sqwap continues from an existing window of seq reclaiming
+ */
+struct folio *get_next_candidate(struct sequential_swap_context *sqwap)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	sqwap->window_start = sqwap->window_end;
+	XA_STATE(xas, sqwap->xa, sqwap->window_end);
+	void *entry;
+	struct folio *next;
+	bool value;
+	rcu_read_lock();
+	entry = xas_next_entry(&xas, ULONG_MAX);
+	value = entry && xa_is_value(entry);
+	rcu_read_unlock();
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+	next = (entry && !value) ? (struct folio *)entry : NULL;
+	trace_get_next_seq_candidate(sqwap, next);
+	return next;
+}
+void sqwap_abort_window(struct sequential_swap_context *sqwap)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	sqwap->window_start = 0;
+	sqwap->window_end = 0;
+	sqwap->swap_ahead_size = max(sqwap->swap_ahead_size / 2, MIN_LRU_BATCH);
+	sqwap->seq_dirty_hits = 0;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+}
+void sqwap_clean_hit(struct sequential_swap_context *sqwap){
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	sqwap->window_end++;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+}
+void sqwap_dirty_hit(struct sequential_swap_context *sqwap){
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	sqwap->seq_dirty_hits++;
+	sqwap->window_end++;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
 }
 #endif
 
@@ -877,12 +1152,12 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	win = __swapin_nr_pages(PFN_DOWN(prev_faddr), PFN_DOWN(faddr), hits,
 				max_win, prev_win);
 	#ifdef CONFIG_VMA_RECLAIM
-	unsigned flags;
+	unsigned long flags;
 	spin_lock_irqsave(&vma->ra_lock, flags);
 	if (win == max_win)
 		vma->try_reduce = true;
 	if (vma->try_reduce){
-		if(is_single_io_stream(vma, win)) {
+		if(is_vma_single_io_stream(vma, win)) {
 			vma->ra_size = max(vma->ra_size / 2, min_swap_ra_granularity);
 			win = vma->ra_size;
 		}
@@ -966,6 +1241,11 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 		#ifdef CONFIG_VMA_RECLAIM
 		// check if addr belongs to cur pmd
 		if ((first_addr_in_cur_pmd & PMD_MASK) + PMD_SIZE <= addr) {
+			/* Unmap old pte before getting new one - releases RCU lock */
+			if (pte) {
+				pte_unmap(pte);
+				pte = NULL;
+			}
 			first_addr_in_cur_pmd = addr;
 			cur_pmd = pmd_offset(vmf->pud, addr);
 			if (pmd_none(*cur_pmd) || pmd_bad(*cur_pmd)){
@@ -978,16 +1258,22 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 			if (!pte)
 				break;
 		}
+		/*
+		 * If pte is NULL (first iteration or after pte_unmap), get a new
+		 * mapping. Otherwise, increment pte to the next entry in the page
+		 * table. The post-increment in (!pte++) evaluates pte before
+		 * incrementing, so we enter the block only when pte was NULL.
+		 */
 		else if (!pte++) {
 			pte = pte_offset_map(cur_pmd, addr);
 			if (!pte)
-			break;
+				break;
 		}
 		#else
 		if (!pte++) {
 			pte = pte_offset_map(vmf->pmd, addr);
 			if (!pte)
-			break;
+				break;
 		}
 		#endif
 		pentry = ptep_get_lockless(pte);
@@ -1016,7 +1302,6 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 	blk_finish_plug(&plug);
 	swap_read_unplug(splug);
 	lru_add_drain();
-	if (win > 1 && vmf->vma)
 skip:
 	/* The folio was likely read above, so no need for plugging here */
 	folio = __read_swap_cache_async(targ_entry, gfp_mask, mpol, targ_ilx,

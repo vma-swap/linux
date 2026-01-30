@@ -3513,10 +3513,6 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		ptep_clear_flush(vma, vmf->address, vmf->pte);
 		folio_add_new_anon_rmap(new_folio, vma, vmf->address, RMAP_EXCLUSIVE,
 					(swp_entry_t){0});
-		#ifdef CONFIG_VMA_RECLAIM
-		folio_update_seq_state(folio_get_sqwap(new_folio), new_folio, folio_get_anon_vma(new_folio)->base_vm_offset - folio_index(new_folio));
-		update_sqwap_state(folio_get_sqwap(new_folio), new_folio, folio_get_anon_vma(new_folio)->base_vm_offset - folio_index(new_folio));
-		#endif
 		folio_add_lru_vma(new_folio, vma);
 		BUG_ON(unshare && pte_write(entry));
 		set_pte_at(mm, vmf->address, vmf->pte, entry);
@@ -4710,8 +4706,7 @@ check_folio:
 	/* No need to invalidate - it was non-present before */
 	// now that we have a folio, we can test if the fault is sequential and if so save it in folio flag seq as it is not used for anon folios
 	#ifdef CONFIG_VMA_RECLAIM
-	folio_update_seq_state(folio_get_sqwap(folio), folio, folio_get_anon_vma(folio)->base_vm_offset - folio_index(folio));
-	update_sqwap_state(folio_get_sqwap(folio), folio, folio_get_anon_vma(folio)->base_vm_offset - folio_index(folio));
+	folio_update_seq_state(folio);
 	#endif
 	update_mmu_cache_range(vmf, vma, address, ptep, nr_pages);
 unlock:
@@ -4948,10 +4943,6 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE,
 				(swp_entry_t){0});
 	folio_add_lru_vma(folio, vma);
-	#ifdef CONFIG_VMA_RECLAIM
-	folio_update_seq_state(folio_get_sqwap(folio), folio, folio_get_anon_vma(folio)->base_vm_offset - folio_index(folio));
-	update_sqwap_state(folio_get_sqwap(folio), folio, folio_get_anon_vma(folio)->base_vm_offset - folio_index(folio));
-	#endif
 setpte:
 	if (vmf_orig_pte_uffd_wp(vmf))
 		entry = pte_mkuffd_wp(entry);

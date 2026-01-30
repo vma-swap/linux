@@ -1345,13 +1345,6 @@ static void shmem_evict_inode(struct inode *inode)
 	struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
 	size_t freed = 0;
 
-#ifdef CONFIG_SWAP_VMA
-	struct swap_info_struct *si = READ_ONCE(info->si);
-	if (si)
-		recycle_si_to_bin(si);
-	WRITE_ONCE(info->si, NULL);
-	#endif
-
 	if (shmem_mapping(inode->i_mapping)) {
 		shmem_unacct_size(info->flags, inode->i_size);
 		inode->i_size = 0;
@@ -1376,6 +1369,23 @@ static void shmem_evict_inode(struct inode *inode)
 			mutex_unlock(&shmem_swaplist_mutex);
 		}
 	}
+
+	/*
+	 * Recycle the swap_info_struct back to the bin AFTER all swap entries
+	 * have been freed by shmem_truncate_range above.
+	 */
+#ifdef CONFIG_SWAP_VMA
+	{
+		struct swap_info_struct *si = READ_ONCE(info->si);
+		if (si)
+			recycle_si_to_bin(si);
+		WRITE_ONCE(info->si, NULL);
+	}
+#ifdef CONFIG_VMA_RECLAIM
+	kfree(info->sqwap);
+	info->sqwap = NULL;
+#endif
+#endif
 
 	simple_xattrs_free(&info->xattrs, sbinfo->max_inodes ? &freed : NULL);
 	shmem_free_inode(inode->i_sb, freed);
@@ -2735,10 +2745,6 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 		vmf->page = folio_file_page(folio, vmf->pgoff);
 		ret |= VM_FAULT_LOCKED;
 	}
-	#ifdef CONFIG_VMA_RECLAIM
-	folio_update_seq_state(folio_get_sqwap(folio), folio, folio_index(folio));
-	update_sqwap_state(folio_get_sqwap(folio), folio, folio_index(folio));
-	#endif
 	return ret;
 }
 
@@ -3058,7 +3064,24 @@ static struct inode *__shmem_get_inode(struct mnt_idmap *idmap,
 	memset(info, 0, (char *)inode - (char *)info);
 	#ifdef CONFIG_SWAP_VMA
 	WRITE_ONCE(info->si, NULL);
-	#endif
+	#ifdef CONFIG_ALLOC_SWAP_AT_MMAP
+	unsigned long pages = DIV_ROUND_UP(size, PAGE_SIZE);
+	pages = max_t(unsigned long, pages, 1); /* usable pages */
+	struct swap_info_struct *si;
+	si = acquire_si_from_bin(pages, inode->i_mapping);
+	if (si) {
+		spin_lock(&info->lock);
+		if (!READ_ONCE(info->si)){
+			WRITE_ONCE(info->si, si);
+		}
+		spin_unlock(&info->lock);
+	}
+	#endif // CONFIG_ALLOC_SWAP_AT_MMAP
+	#ifdef CONFIG_VMA_RECLAIM
+	info->sqwap = kzalloc(sizeof(struct sequential_swap_context), GFP_KERNEL);
+	init_sequential_swap_context(info->sqwap, READ_ONCE(info->si), &inode->i_mapping->i_pages);
+	#endif // CONFIG_VMA_RECLAIM
+#endif // CONFIG_SWAP_VMA
 	spin_lock_init(&info->lock);
 	atomic_set(&info->stop_eviction, 0);
 	info->seals = F_SEAL_SEAL;
@@ -5828,25 +5851,6 @@ static struct file *__shmem_file_setup(struct vfsmount *mnt, const char *name,
 	}
 	inode->i_flags |= i_flags;
 	inode->i_size = size;
-#ifdef CONFIG_SWAP_VMA
-	{
-		unsigned long pages = DIV_ROUND_UP(size, PAGE_SIZE);
-		
-		pages = max_t(unsigned long, pages, 1); /* usable pages */
-		#ifdef CONFIG_ALLOC_SWAP_AT_MMAP
-		struct swap_info_struct *si;
-		si = acquire_si_from_bin(pages, inode->i_mapping);
-		if (si) {
-			struct shmem_inode_info *info = SHMEM_I(inode);
-
-			spin_lock(&info->lock);
-			if (!READ_ONCE(info->si))
-				WRITE_ONCE(info->si, si);
-			spin_unlock(&info->lock);
-		}
-		#endif
-	}
-#endif
 	clear_nlink(inode);	/* It is unlinked */
 	res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
 	if (!IS_ERR(res))

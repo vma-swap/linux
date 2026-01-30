@@ -1292,6 +1292,9 @@ void exit_mmap(struct mm_struct *mm)
 	mmap_write_lock(mm);
 	mt_clear_in_rcu(&mm->mm_mt);
 	vma_iter_set(&vmi, vma->vm_end);
+	#ifdef CONFIG_SWAP_VMA
+	tlb_flush_mmu(&tlb);
+	#endif
 	free_pgtables(&tlb, &vmi.mas, vma, FIRST_USER_ADDRESS,
 		      USER_PGTABLES_CEILING, true);
 	tlb_finish_mmu(&tlb);

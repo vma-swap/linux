@@ -31,7 +31,7 @@ TRACE_EVENT(swap_entry_alloc_from_cache,
         __entry->nr = nr;
     ),
     
-    TP_printk("entry=%lx slots=%p cur=%d nr=%d",
+    TP_printk("entry=%lx slots=%lx cur=%d nr=%d",
               __entry->entry_val, __entry->slots, __entry->cur, __entry->nr)
 );
 TRACE_EVENT(refill_swap_slots_cache,
@@ -397,25 +397,99 @@ TP_printk("vma=%p actual_si=%p attempt_si=%p folio=%p index=%d address=%lx.",
           __entry->vma, __entry->actual_si, __entry->attempt_si, __entry->folio, __entry->index, __entry->address)
 );
 #ifdef CONFIG_SWAP_VMA
+TRACE_EVENT(is_sqwap_single_io_stream,
+    TP_PROTO(struct sequential_swap_context *sqwap, int ret_val, unsigned int seq_dirty_hits, unsigned int swap_ahead_size),
+    TP_ARGS(sqwap, ret_val, seq_dirty_hits, swap_ahead_size),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(int, ret_val)
+        __field(unsigned int, seq_dirty_hits)
+        __field(unsigned int, swap_ahead_size)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->ret_val = ret_val;
+        __entry->seq_dirty_hits = seq_dirty_hits;
+        __entry->swap_ahead_size = swap_ahead_size;
+    ),
+    TP_printk("sqwap=%p ret_val=%d seq_dirty_hits=%u swap_ahead_size=%u", __entry->sqwap, __entry->ret_val, __entry->seq_dirty_hits, __entry->swap_ahead_size)
+);
+
+TRACE_EVENT(is_vma_single_io_stream,
+    TP_PROTO(struct vm_area_struct *vma, int ret_val, unsigned int threshold),
+    TP_ARGS(vma, ret_val, threshold),
+    TP_STRUCT__entry(
+        __field(struct vm_area_struct *, vma)
+        __field(int, ret_val)
+        __field(unsigned int, threshold)
+    ),
+    TP_fast_assign(
+        __entry->vma = vma;
+        __entry->ret_val = ret_val;
+        __entry->threshold = threshold;
+    ),
+    TP_printk("vma=%p ret_val=%d threshold=%u", __entry->vma, __entry->ret_val, __entry->threshold)
+);
+
+TRACE_EVENT(sqwap_update_seq_reclaim_state,
+    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset, unsigned long start, unsigned long end, size_t swap_ahead, bool folio_is_shmem),
+    TP_ARGS(sqwap, folio_seq, folio_offset, start, end, swap_ahead, folio_is_shmem),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(bool, folio_seq)
+        __field(unsigned long, folio_offset)
+        __field(unsigned long, start)
+        __field(unsigned long, end)
+        __field(size_t, swap_ahead)
+        __field(bool, folio_is_shmem)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->folio_seq = folio_seq;
+        __entry->folio_offset = folio_offset;
+        __entry->start = start;
+        __entry->end = end;
+        __entry->swap_ahead = swap_ahead;
+        __entry->folio_is_shmem = folio_is_shmem;
+    ),
+    TP_printk("sqwap=%p folio_seq=%d folio_offset=%lu start=%lu end=%lu swap_ahead=%zu folio_is_shmem=%d", __entry->sqwap, __entry->folio_seq, __entry->folio_offset, __entry->start, __entry->end, __entry->swap_ahead, __entry->folio_is_shmem)
+);
+TRACE_EVENT(folio_update_seq_state,
+    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset, struct folio *folio, bool folio_is_shmem),
+    TP_ARGS(sqwap, folio_seq, folio_offset, folio, folio_is_shmem),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(bool, folio_seq)
+        __field(unsigned long, folio_offset)
+        __field(struct folio *, folio)
+        __field(bool, folio_is_shmem)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->folio_seq = folio_seq;
+        __entry->folio_offset = folio_offset;
+        __entry->folio = folio;
+        __entry->folio_is_shmem = folio_is_shmem;
+    ),
+    TP_printk("sqwap=%p folio_seq=%d folio_offset=%lu folio=%p folio_is_shmem=%d", __entry->sqwap, __entry->folio_seq, __entry->folio_offset, __entry->folio, __entry->folio_is_shmem)
+);
 TRACE_EVENT(get_swap_info_from_folio,
-    TP_PROTO( struct folio *folio, struct swap_info_struct* si, unsigned long index, bool is_anon, bool is_shmem),
-    TP_ARGS(folio, si, index, is_anon, is_shmem),
+    TP_PROTO( struct folio *folio, struct swap_info_struct* si, bool is_anon, bool is_shmem),
+    TP_ARGS(folio, si, is_anon, is_shmem),
     TP_STRUCT__entry(
         __field(struct folio *, folio)
         __field(struct swap_info_struct*, si)
-        __field(unsigned long, index)
         __field(bool, is_anon)
         __field(bool, is_shmem)
     ),
     TP_fast_assign(
         __entry->folio = folio;
         __entry->si = si;
-        __entry->index = index;
         __entry->is_anon = is_anon;
         __entry->is_shmem = is_shmem;
     ),
-    TP_printk("folio=%p si=%p index=%lu is_anon=%d is_shmem=%d.",
-              __entry->folio, __entry->si, __entry->index, __entry->is_anon, __entry->is_shmem)
+    TP_printk("folio=%p si=%p is_anon=%d is_shmem=%d.",
+              __entry->folio, __entry->si, __entry->is_anon, __entry->is_shmem)
 );
 TRACE_EVENT(vma_alloc_range,
 TP_PROTO(struct swap_info_struct* si, unsigned long start, unsigned char usage, unsigned int order),
@@ -1135,48 +1209,117 @@ TRACE_EVENT(get_swapout_data,
         __entry->folio, __entry->vma, __entry->address, __entry->folio_index, __entry->backing_size, __entry->vm_start, __entry->vm_end, __entry->is_growsdown, __entry->is_shared)
 );
 #ifdef CONFIG_VMA_RECLAIM
-TRACE_EVENT(sqwap_update_seq_reclaim_state,
-    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset,
-	     pgoff_t start, pgoff_t end, size_t swap_ahead, bool is_shmem),
-    TP_ARGS(sqwap, folio_seq, folio_offset, start, end, swap_ahead, is_shmem),
+TRACE_EVENT(sqwap_start_new_seq_window,
+    TP_PROTO(struct sequential_swap_context *sqwap, struct folio *first_folio, unsigned long folio_offset),
+    TP_ARGS(sqwap, first_folio, folio_offset),
     TP_STRUCT__entry(
-        __field(bool, folio_seq)
+        __field(struct sequential_swap_context *, sqwap)
+        __field(struct folio *, first_folio)
         __field(unsigned long, folio_offset)
-        __field(pgoff_t, start)
-        __field(pgoff_t, end)
-        __field(size_t, swap_ahead)
-        __field(bool, is_shmem)
     ),
     TP_fast_assign(
-        __entry->folio_seq = folio_seq;
+        __entry->sqwap = sqwap;
+        __entry->first_folio = first_folio;
         __entry->folio_offset = folio_offset;
-        __entry->start = start;
-        __entry->end = end;
-        __entry->swap_ahead = swap_ahead;
-        __entry->is_shmem = is_shmem;
     ),
-    TP_printk("folio_seq=%d folio_offset=%lu start=%lu end=%lu swap_ahead=%zu is_shmem=%d",
-        __entry->folio_seq, __entry->folio_offset, __entry->start, __entry->end,
-        __entry->swap_ahead, __entry->is_shmem)
+    TP_printk("sqwap=%p first_folio=%p folio_offset=%lu",
+        __entry->sqwap, __entry->first_folio, __entry->folio_offset)
 );
-TRACE_EVENT(folio_update_seq_state,
-    TP_PROTO(struct sequential_swap_context *sqwap, bool folio_seq, unsigned long folio_offset,
-	     struct folio *folio, bool is_shmem),
-    TP_ARGS(sqwap, folio_seq, folio_offset, folio, is_shmem),
+TRACE_EVENT(get_next_folio_in_xarray,
+    TP_PROTO(void *xa, unsigned long after_index, struct folio *next_folio, unsigned long next_index, bool entry_was_value),
+    TP_ARGS(xa, after_index, next_folio, next_index, entry_was_value),
     TP_STRUCT__entry(
-        __field(bool, folio_seq)
-        __field(unsigned long, folio_offset)
-        __field(struct folio *, folio)
-        __field(bool, is_shmem)
+        __field(void *, xa)
+        __field(unsigned long, after_index)
+        __field(struct folio *, next_folio)
+        __field(unsigned long, next_index)
+        __field(bool, entry_was_value)
     ),
     TP_fast_assign(
-        __entry->folio_seq = folio_seq;
-        __entry->folio_offset = folio_offset;
-        __entry->folio = folio;
-        __entry->is_shmem = is_shmem;
+        __entry->xa = xa;
+        __entry->after_index = after_index;
+        __entry->next_folio = next_folio;
+        __entry->next_index = next_index;
+        __entry->entry_was_value = entry_was_value;
     ),
-    TP_printk("folio_seq=%d folio_offset=%lu folio=%p is_shmem=%d",
-        __entry->folio_seq, __entry->folio_offset, __entry->folio, __entry->is_shmem)
+    TP_printk("xa=%p after_index=%lu next_folio=%p next_index=%lu entry_was_value=%d",
+        __entry->xa, __entry->after_index, __entry->next_folio, __entry->next_index, __entry->entry_was_value)
+);
+TRACE_EVENT(get_next_seq_candidate_for_folio,
+    TP_PROTO(struct folio *cur_folio, bool is_shmem, bool is_anon, unsigned long index,
+	     struct folio *next_folio, bool skip_folio),
+    TP_ARGS(cur_folio, is_shmem, is_anon, index, next_folio, skip_folio),
+    TP_STRUCT__entry(
+        __field(struct folio *, cur_folio)
+        __field(bool, is_shmem)
+        __field(bool, is_anon)
+        __field(unsigned long, index)
+        __field(struct folio *, next_folio)
+        __field(bool, skip_folio)
+    ),
+    TP_fast_assign(
+        __entry->cur_folio = cur_folio;
+        __entry->is_shmem = is_shmem;
+        __entry->is_anon = is_anon;
+        __entry->index = index;
+        __entry->next_folio = next_folio;
+        __entry->skip_folio = skip_folio;
+    ),
+    TP_printk("cur_folio=%p is_shmem=%d is_anon=%d index=%lu next_folio=%p skip_folio=%d",
+        __entry->cur_folio, __entry->is_shmem, __entry->is_anon,
+        __entry->index, __entry->next_folio, __entry->skip_folio)
+);
+TRACE_EVENT(get_prev_folio_in_xarray,
+    TP_PROTO(void *xa, unsigned long before_index, struct folio *prev_folio, unsigned long prev_index, bool entry_was_value),
+    TP_ARGS(xa, before_index, prev_folio, prev_index, entry_was_value),
+    TP_STRUCT__entry(
+        __field(void *, xa)
+        __field(unsigned long, before_index)
+        __field(struct folio *, prev_folio)
+        __field(unsigned long, prev_index)
+        __field(bool, entry_was_value)
+    ),
+    TP_fast_assign(
+        __entry->xa = xa;
+        __entry->before_index = before_index;
+        __entry->prev_folio = prev_folio;
+        __entry->prev_index = prev_index;
+        __entry->entry_was_value = entry_was_value;
+    ),
+    TP_printk("xa=%p before_index=%lu prev_folio=%p prev_index=%lu entry_was_value=%d",
+        __entry->xa, __entry->before_index, __entry->prev_folio, __entry->prev_index, __entry->entry_was_value)
+);
+TRACE_EVENT(get_first_folio_in_seq,
+    TP_PROTO(struct folio *cur_folio, struct folio *first_folio, unsigned long steps, unsigned long start_index),
+    TP_ARGS(cur_folio, first_folio, steps, start_index),
+    TP_STRUCT__entry(
+        __field(struct folio *, cur_folio)
+        __field(struct folio *, first_folio)
+        __field(unsigned long, steps)
+        __field(unsigned long, start_index)
+    ),
+    TP_fast_assign(
+        __entry->cur_folio = cur_folio;
+        __entry->first_folio = first_folio;
+        __entry->steps = steps;
+        __entry->start_index = start_index;
+    ),
+    TP_printk("cur_folio=%p first_folio=%p steps=%lu start_index=%lu",
+        __entry->cur_folio, __entry->first_folio, __entry->steps, __entry->start_index)
+);
+TRACE_EVENT(get_next_seq_candidate,
+    TP_PROTO(struct sequential_swap_context *sqwap, struct folio *next),
+    TP_ARGS(sqwap, next),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(struct folio *, next)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->next = next;
+    ),
+    TP_printk("sqwap=%p next=%p",
+        __entry->sqwap, __entry->next)
 );
 #endif /* CONFIG_VMA_RECLAIM */
 #endif /* _TRACE_SWAP_H */

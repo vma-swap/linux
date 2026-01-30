@@ -110,13 +110,22 @@ static bool vma_swap_mergeable(struct vma_merge_struct *vmg,
 			       struct vm_area_struct *other)
 {
 	struct swap_info_struct *si = NULL, *other_si = NULL;
+	struct xarray *xa = NULL, *other_xa = NULL;
 	bool mergeable;
 
-	if (vmg->anon_vma)
+	if (vmg->anon_vma) {
 		si = READ_ONCE(vmg->anon_vma->si);
-	if (other && other->anon_vma)
+		xa = &vmg->anon_vma->xpages;
+		if (!xa_empty(xa))
+			return false;
+	}
+	if (other && other->anon_vma) {
 		other_si = READ_ONCE(other->anon_vma->si);
-
+		other_xa = &other->anon_vma->xpages;
+		if (!xa_empty(other_xa))
+			return false;
+	}
+	//we can merge only if 
 	mergeable = (!si && !other_si) || (si && si == other_si);
 
 	trace_vma_swap_mergeable(vmg->vma ? vmg->vma : other, other,
@@ -466,6 +475,9 @@ void unmap_region(struct ma_state *mas, struct vm_area_struct *vma,
 	unmap_vmas(&tlb, mas, vma, vma->vm_start, vma->vm_end, vma->vm_end,
 		   /* mm_wr_locked = */ true);
 	mas_set(mas, vma->vm_end);
+	#ifdef CONFIG_SWAP_VMA
+	tlb_flush_mmu(&tlb);
+	#endif
 	free_pgtables(&tlb, mas, vma, prev ? prev->vm_end : FIRST_USER_ADDRESS,
 		      next ? next->vm_start : USER_PGTABLES_CEILING,
 		      /* mm_wr_locked = */ true);
@@ -1104,10 +1116,10 @@ int vma_expand(struct vma_merge_struct *vmg)
 		goto nomem;
 	#ifdef CONFIG_SWAP_VMA
 	if (vma && vma->anon_vma){
+		if (vma->anon_vma->base_vm_offset != vmg->pgoff && !xa_empty(&vma->anon_vma->xpages))
+			printk(KERN_ERR "vma_expand: base_vm_offset moving left with folios in xarray! old_base=%lu new_base=%lu", vma->anon_vma->base_vm_offset, vmg->pgoff);
 		vma->anon_vma->base_vm_offset = vmg->pgoff;
 		vma->anon_vma->end_vm_offset = vmg->pgoff + vma_pages(vma);
-		if (READ_ONCE(vma->anon_vma->si) && (vma->vm_start > vmg->start))
-			printk(KERN_ERR "vma_expand. grow back!: anon_vma_base_vm_offset=%lu anon_vma_end_vm_offset=%lu si=%p", vma->anon_vma->base_vm_offset, vma->anon_vma->end_vm_offset, READ_ONCE(vma->anon_vma->si));
 	}
 	#endif
 	return 0;
@@ -1150,6 +1162,15 @@ int vma_shrink(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	vma_adjust_trans_huge(vma, start, end, 0);
 
 	vma_iter_clear(vmi);
+	#ifdef CONFIG_SWAP_VMA
+	struct anon_vma *anon_vma = vma->anon_vma;
+	if (anon_vma) {
+		if (anon_vma->is_stack){
+			anon_vma->base_vm_offset = pgoff;
+			anon_vma->end_vm_offset = pgoff + vma_pages(vma);
+		}
+	}
+	#endif
 	vma_set_range(vma, start, end, pgoff);
 	vma_complete(&vp, vmi, vma->vm_mm);
 	validate_mm(vma->vm_mm);
@@ -1175,6 +1196,9 @@ static inline void vms_clear_ptes(struct vma_munmap_struct *vms,
 		   vms->vma_count, mm_wr_locked);
 
 	mas_set(mas_detach, 1);
+	#ifdef CONFIG_SWAP_VMA
+	tlb_flush_mmu(&tlb);
+	#endif
 	/* start and end may be different if there is no prev or next vma. */
 	free_pgtables(&tlb, mas_detach, vms->vma, vms->unmap_start,
 		      vms->unmap_end, mm_wr_locked);
@@ -1910,10 +1934,11 @@ struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma)
 			has_si = si != NULL;
 			base_vm_offset = anon_vma->base_vm_offset;
 			end_vm_offset = anon_vma->end_vm_offset;
+			struct xarray *xa = &anon_vma->xpages;
 			trace_find_mergeable_anon_vma(vma, anon_vma,
 						      base_vm_offset,
 						      end_vm_offset, has_si);
-			if (!has_si)
+			if (!has_si && xa_empty(xa))
 				return anon_vma;
 			else
 				return NULL;
@@ -2982,6 +3007,8 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				vma->vm_pgoff -= grow;
 				#ifdef CONFIG_SWAP_VMA
 				if (vma->anon_vma){
+					if ((vma->anon_vma->base_vm_offset - grow != vma->vm_pgoff) || (vma->anon_vma->end_vm_offset < vma->vm_pgoff + vma_pages(vma)))
+						printk(KERN_ERR "expand_downwards: invalid movment of base_vm_offset! anon_vma=%p old_base=%lu new_base=%lu grow=%lu vma_pages=%lu old_end=%lu new_end=%lu", vma->anon_vma, vma->anon_vma->base_vm_offset, vma->vm_pgoff, grow, vma_pages(vma), vma->anon_vma->end_vm_offset, vma->vm_pgoff + vma_pages(vma));
 					vma->anon_vma->base_vm_offset = vma->vm_pgoff;
 					vma->anon_vma->end_vm_offset = vma->vm_pgoff + vma_pages(vma);
 					vma->anon_vma->is_stack = vma->vm_flags & VM_GROWSDOWN;

@@ -283,7 +283,14 @@ void recycle_si_to_bin(struct swap_info_struct *si)
 	si->swap_map[0] = SWAP_MAP_BAD;
 	if (si->zeromap)
 		bitmap_zero(si->zeromap, si->max);
-	atomic_long_set(&si->inuse_pages, SWAP_USAGE_OFFLIST_BIT);
+	// TODO: extremely improtant! check that usage us zero of we could have some weird bug where a folio is pointing to an si that has been recycled and is now being used by another mapping
+	// BUG_ON(atomic_long_read(&si->inuse_pages) != 0);
+	/*
+	 * Reset counter to 0 but do NOT set OFFLIST_BIT. The device stays
+	 * on avail_lists - we don't care about avail_list management in
+	 * the bin approach.
+	 */
+	atomic_long_set(&si->inuse_pages, 0);
 	spin_unlock(&si->lock);
 	spin_unlock(&swap_lock);
 	si->mapping = NULL;
@@ -1402,21 +1409,17 @@ static bool get_swap_device_info(struct swap_info_struct *si)
 }
 #ifdef CONFIG_SWAP_VMA
 
-static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, unsigned long *folio_offset)
+static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 {
 	struct swap_info_struct *si, *old_si = NULL;
 
 	if (folio_test_anon(folio)){
 		struct anon_vma *anon_vma = folio_anon_vma(folio);
 		BUG_ON(!anon_vma);
-		if (anon_vma->is_stack)
-			*folio_offset = anon_vma->end_vm_offset - folio_index(folio);
-		else
-			*folio_offset = folio_index(folio) - anon_vma->base_vm_offset;
 		si = READ_ONCE(anon_vma->si);
 		if (!si){
 			// it could be that this anon_vma was created before swapon so lets try to allocate an si for it.
-			struct address_space *mapping = (struct address_space *)( anon_vma + PAGE_MAPPING_ANON);
+			struct address_space *mapping = (struct address_space *)( (void *)anon_vma + PAGE_MAPPING_ANON);
 			si = acquire_si_from_bin(anon_vma->end_vm_offset - anon_vma->base_vm_offset, mapping);
 			if (si) {
 				old_si = cmpxchg(&anon_vma->si, NULL, si);
@@ -1425,22 +1428,33 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, un
 					si = old_si;
 				}
 			}
-			else
-				printk(KERN_ERR "get_swap_info_from_folio: si is NULL. failed to acquire si for this anon_vma backing_size=%lu anon_vma_base_vm_offset=%lu anon_vma_end_vm_offset=%lu", anon_vma->end_vm_offset - anon_vma->base_vm_offset, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
-		}
-		if (si && (*folio_offset >= si->pages || *folio_offset < 0)){
-			printk(KERN_ERR "get_swap_info_from_folio: folio_offset is out of bounds. folio_offset=%lu si->pages=%lu folio_index=%lu is_stack=%d anon_vma_base_vm_offset=%lu anon_vma_end_vm_offset=%lu", *folio_offset, si->pages, folio_index(folio), anon_vma->is_stack, anon_vma->base_vm_offset, anon_vma->end_vm_offset);
-			BUG_ON(1);
+			else {
+				struct anon_vma_chain *avc;
+				struct vm_area_struct *vma;
+				struct task_struct *task;
+				unsigned long backing_pages = anon_vma->end_vm_offset - anon_vma->base_vm_offset;
+
+				printk(KERN_ERR "get_swap_info_from_folio: si is NULL. failed to acquire si for this anon_vma backing_size=%lu (pages, ~%lu MiB) anon_vma_base_vm_offset=%lu anon_vma_end_vm_offset=%lu\n",
+					backing_pages, (backing_pages * PAGE_SIZE) / (1024 * 1024), anon_vma->base_vm_offset, anon_vma->end_vm_offset);
+				anon_vma_lock_read(anon_vma);
+				anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root, 0, ULONG_MAX) {
+					vma = avc->vma;
+					task = READ_ONCE(vma->vm_mm->owner);
+					if (task)
+						printk(KERN_ERR "  vma [%lx-%lx] pgoff=%lx pid=%d comm=%s\n",
+							vma->vm_start, vma->vm_end, vma->vm_pgoff,
+							task_tgid_nr(task), task->comm);
+					else
+						printk(KERN_ERR "  vma [%lx-%lx] pgoff=%lx (no owner)\n",
+							vma->vm_start, vma->vm_end, vma->vm_pgoff);
+				}
+				anon_vma_unlock_read(anon_vma);
+			}
 		}
 	}
 	else if (folio_is_shmem(folio)){
 		struct inode *inode = folio_inode(folio);
 		struct shmem_inode_info *shmem_inode = SHMEM_I(inode);
-		*folio_offset = folio_index(folio);
-		if (*folio_offset > inode->i_size || *folio_offset < 0){
-			printk(KERN_ERR "get_swap_info_from_folio: folio_offset is out of bounds. folio_offset=%lu inode_size=%lu", *folio_offset, inode->i_size);
-			BUG_ON(1);
-		}
 		si = READ_ONCE(shmem_inode->si);
 		if (!si){
 			// it could be that this shmem_inode was created before swapon so lets try to allocate an si for it.
@@ -1461,11 +1475,11 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, un
 		printk(KERN_ERR "get_swap_info_from_folio: folio is not anon or shmem\n");
 		BUG_ON(1);
 	}
-	trace_get_swap_info_from_folio(folio, si, *folio_offset, folio_test_anon(folio), folio_is_shmem(folio));
-	if (si && (*folio_offset >= si->pages || *folio_offset < 0)){
-		printk(KERN_ERR "get_swap_info_from_folio: folio_offset is out of bounds. folio_offset=%lu si->pages=%lu folio_index=%lu", *folio_offset, si->pages, folio_index(folio));
-		BUG_ON(1);
-	}
+	trace_get_swap_info_from_folio(folio, si, folio_test_anon(folio), folio_is_shmem(folio));
+	#ifdef CONFIG_VMA_RECLAIM
+	if (si)
+		WRITE_ONCE(folio_get_sqwap(folio)->si, si);
+	#endif
 	return si;
 }
 #endif
@@ -1473,9 +1487,14 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio, un
 #ifdef CONFIG_SWAP_VMA
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
 {
-	unsigned long folio_offset;
-	struct swap_info_struct *si = get_swap_info_from_folio(folio, &folio_offset);
-	BUG_ON(!si);
+	unsigned long folio_offset = get_folio_offset(folio);
+	struct swap_info_struct *si = get_swap_info_from_folio(folio);
+	if (!si)
+		goto noswap;
+	if (folio_offset == ULONG_MAX || folio_offset >= si->pages || folio_offset < 0){
+		printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages);
+		goto noswap;
+	}
 	BUG_ON(n_goal != 1);
 
 #else
@@ -1496,6 +1515,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 			put_swap_device(si);
 			swp_entries[0] = swp_entry(si->type, folio_offset + 1);
 			n_ret = 1;
+			atomic_long_sub(1, &nr_swap_pages);
 			goto check_out;
 		}
 	}
