@@ -359,6 +359,27 @@ struct swap_info_struct {
 					   */
 };
 
+#ifdef CONFIG_VMA_RECLAIM
+struct sequential_swap_context {
+	spinlock_t lock;
+	pgoff_t last_fault_offset[CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE];
+	int last_fault_idx;
+	size_t swap_ahead_size;
+	pgoff_t window_start;
+	pgoff_t window_end;
+	size_t seq_hits;
+	struct vm_area_struct *next_vma;
+	struct mem_cgroup *memcg;
+	struct pglist_data *pgdat;
+};
+
+void init_sequential_swap_context(struct sequential_swap_context *sqwap);
+void update_sqwap_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset);
+void folio_update_seq_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset);
+struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma);
+struct sequential_swap_context *folio_get_sqwap(struct folio *folio);
+#endif
+
 static inline swp_entry_t page_swap_entry(struct page *page)
 {
 	struct folio *folio = page_folio(page);

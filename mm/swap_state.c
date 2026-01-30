@@ -22,6 +22,7 @@
 #include <linux/vmalloc.h>
 #include <linux/swap_slots.h>
 #include <linux/huge_mm.h>
+#include <linux/rmap.h>
 #include <linux/shmem_fs.h>
 #include "internal.h"
 #include "swap.h"
@@ -765,6 +766,85 @@ void exit_swap_address_space(unsigned int type)
 static bool is_single_io_stream(struct vm_area_struct *vma, unsigned int threshold) {
 	bool ret_val = vma && vma->anon_vma && get_seq_hits(vma->anon_vma->root->si->bdev) > threshold;
 	return ret_val;
+}
+
+void init_sequential_swap_context(struct sequential_swap_context *sqwap) {
+	spin_lock_init(&sqwap->lock);
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++)
+		sqwap->last_fault_offset[i] = (pgoff_t)-1;
+	sqwap->last_fault_idx = -1;
+	sqwap->swap_ahead_size = MIN_LRU_BATCH;
+	sqwap->window_start = 0;
+	sqwap->window_end = 0;
+	sqwap->seq_hits = 0;
+	sqwap->next_vma = NULL;
+	sqwap->memcg = NULL;
+	sqwap->pgdat = NULL;
+}
+void update_sqwap_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset){
+	unsigned long flags;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	if (folio_offset >= sqwap->window_start && folio_offset <= sqwap->window_end + sqwap->swap_ahead_size) {
+		// fault inside window, reset window
+		sqwap->window_start = 0;
+		sqwap->window_end = 0;
+		sqwap->swap_ahead_size = MIN_LRU_BATCH;
+	}
+	pgoff_t start = sqwap->window_start;
+	pgoff_t end = sqwap->window_end;
+	
+	size_t swap_ahead = sqwap->swap_ahead_size;
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+	trace_sqwap_update_seq_reclaim_state(sqwap, folio_test_seq(folio), folio_offset, start, end, swap_ahead, folio_is_shmem(folio));
+}
+
+void folio_update_seq_state(struct sequential_swap_context *sqwap, struct folio *folio, unsigned long folio_offset) {
+	unsigned long flags;
+	bool is_sequential = false;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	for (int i = 0; i < CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE; i++) {
+		if (sqwap->last_fault_offset[i] != -1 && folio_offset == sqwap->last_fault_offset[i] + 1) {
+			is_sequential = true;
+			break;
+		}
+	}
+	// Since we test forward, we need to store backwards to maintain proper sequence
+	int new_idx = (sqwap->last_fault_idx + 1) % CONFIG_VMA_RECLAIM_SEQUENTIAL_TOLERANCE;
+	sqwap->last_fault_idx = new_idx;
+	sqwap->last_fault_offset[new_idx] = folio_offset;
+	
+	if (is_sequential)
+		folio_set_seq(folio);
+	else
+		folio_clear_seq(folio);
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+	trace_folio_update_seq_state(sqwap, folio_test_seq(folio), folio_offset, folio, folio_is_shmem(folio));
+}
+
+struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma)
+{
+	struct sequential_swap_context *sqwap = NULL;
+
+	if (vma_is_anon_shmem(vma))
+		sqwap = SHMEM_I(vma->vm_file->f_inode)->sqwap;
+	else if (vma_is_anonymous(vma)) {
+		BUG_ON(!vma->anon_vma);
+		sqwap = vma->anon_vma->sqwap;
+	}
+	BUG_ON(!sqwap);
+	return sqwap;
+}
+
+struct sequential_swap_context *folio_get_sqwap(struct folio *folio)
+{
+	struct sequential_swap_context *sqwap = NULL;
+
+	if (folio_is_shmem(folio))
+		return SHMEM_I(folio_inode(folio))->sqwap;
+	if (folio_test_anon(folio))
+		return folio_get_anon_vma(folio)->sqwap;
+	BUG_ON(!sqwap);
+	return sqwap;
 }
 #endif
 

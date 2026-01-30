@@ -70,6 +70,9 @@ struct anon_vma {
 	struct xarray xpages;
 	#ifdef CONFIG_SWAP_VMA
    	struct swap_info_struct *si; // each VMA is connected to a swap struct
+	#ifdef CONFIG_VMA_RECLAIM
+	struct sequential_swap_context *sqwap;
+	#endif // CONFIG_VMA_RECLAIM
 	#endif // CONFIG_SWAP_VMA
 };
 
