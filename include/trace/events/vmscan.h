@@ -657,6 +657,84 @@ TRACE_EVENT(mm_vmscan_update_sqwap_reclaim_size,
 		__entry->new_size,
 		__entry->sqwap_seq_hits)
 );
+TRACE_EVENT(mm_vmscan_next_sqwap_seq_reclaim,
+	TP_PROTO(struct sequential_swap_context *sqwap),
+	TP_ARGS(sqwap),
+	TP_STRUCT__entry(
+		__field(struct sequential_swap_context *, sqwap)
+	),
+	TP_fast_assign(
+		__entry->sqwap = sqwap;
+	),
+	TP_printk("sqwap=%p", __entry->sqwap)
+);
+TRACE_EVENT(mm_vmscan_no_sqwap_seq_reclaim,
+	TP_PROTO(struct sequential_swap_context *sqwap),
+	TP_ARGS(sqwap),
+	TP_STRUCT__entry(
+		__field(struct sequential_swap_context *, sqwap)
+	),
+	TP_fast_assign(
+		__entry->sqwap = sqwap;
+	),
+	TP_printk("sqwap=%p", __entry->sqwap)
+);
+TRACE_EVENT(mm_vmscan_seq_record_run,
+	TP_PROTO(struct sequential_swap_context *sqwap, int gen, size_t len, pgoff_t start, pgoff_t end, unsigned long max_seq),
+	TP_ARGS(sqwap, gen, len, start, end, max_seq),
+	TP_STRUCT__entry(
+		__field(struct sequential_swap_context *, sqwap)
+		__field(int, gen)
+		__field(size_t, len)
+		__field(pgoff_t, start)
+		__field(pgoff_t, end)
+		__field(unsigned long, max_seq)
+	),
+	TP_fast_assign(
+		__entry->sqwap = sqwap;
+		__entry->gen = gen;
+		__entry->len = len;
+		__entry->start = start;
+		__entry->end = end;
+		__entry->max_seq = max_seq;
+	),
+	TP_printk("sqwap=%p gen=%d len=%lu start=%lu end=%lu max_seq=%lu",
+		__entry->sqwap, __entry->gen, __entry->len, __entry->start, __entry->end, __entry->max_seq)
+);
+TRACE_EVENT(mm_vmscan_seq_run,
+	TP_PROTO(struct folio *folio, pgoff_t off, int gen, size_t run_len),
+	TP_ARGS(folio, off, gen, run_len),
+	TP_STRUCT__entry(
+		__field(struct folio *, folio)
+		__field(pgoff_t, off)
+		__field(int, gen)
+		__field(size_t, run_len)
+	),
+	TP_fast_assign(
+		__entry->folio = folio;
+		__entry->off = off;
+		__entry->gen = gen;
+		__entry->run_len = run_len;
+	),
+	TP_printk("folio=%p off=%lu gen=%d run_len=%zu",
+		__entry->folio, __entry->off, __entry->gen, __entry->run_len)
+);
+TRACE_EVENT(mm_vmscan_seq_flush,
+	TP_PROTO(struct sequential_swap_context *sqwap, size_t run_len, int gen),
+	TP_ARGS(sqwap, run_len, gen),
+	TP_STRUCT__entry(
+		__field(struct sequential_swap_context *, sqwap)
+		__field(size_t, run_len)
+		__field(int, gen)
+	),
+	TP_fast_assign(
+		__entry->sqwap = sqwap;
+		__entry->run_len = run_len;
+		__entry->gen = gen;
+	),
+	TP_printk("sqwap=%p run_len=%lu gen=%d",
+		__entry->sqwap, __entry->run_len, __entry->gen)
+);
 TRACE_EVENT(mm_vmscan_sort_folio,
 	TP_PROTO(struct folio *folio, unsigned int ref, char* reason),
 	TP_ARGS(folio, ref, reason),

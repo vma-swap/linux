@@ -500,6 +500,14 @@ struct lru_gen_mm_walk {
 	int batched;
 	bool can_swap;
 	bool force_scan;
+#ifdef CONFIG_VMA_RECLAIM
+	/* PTE scan: same-gen sequential runs per sqwap; supports huge pages via expected next offset */
+	pgoff_t seq_run_start;           /* start offset of current run */
+	pgoff_t seq_next_expected_offset; /* next folio must start here to extend run */
+	int seq_last_gen;
+	unsigned long seq_run_len;
+	void *seq_sqwap; /* struct sequential_swap_context * for current VMA */
+#endif
 };
 
 /*

@@ -182,10 +182,10 @@ struct scan_control {
 	/* for recording the reclaimed slab by now */
 	struct reclaim_state reclaim_state;
 	#ifdef CONFIG_VMA_RECLAIM
-	unsigned int vma_reclamation;
 	unsigned int len_sqwaps;
 	bool ignore_refs;
 	struct sequential_swap_context *sqwap_list;
+	bool prioritize_large; /* starts true: require at least MIN_LRU_BATCH when starting new sqwap; cleared if we isolated nothing */
 	#endif
 };
 
@@ -3333,7 +3333,6 @@ static bool check_isolate_folio(struct lruvec *lruvec, struct folio *folio, stru
 	}
 	/* raced with another isolation */
 	if (!folio_test_lru(folio)) {
-		printk(KERN_DEBUG "folio_test_clear_lru failed in check_isolate_folio");
 		return false;
 	}
 	return true;
@@ -3364,21 +3363,29 @@ static void update_sqwap_reclaim_size(struct scan_control *sc)
 		trace_mm_vmscan_update_sqwap_reclaim_size(tmp_sqwap, new_size, sqwap_seq_dirty_hits);
 	}
 }
-static struct sequential_swap_context *get_next_sqwap_seq_reclaim(struct scan_control *sc)
+static struct sequential_swap_context *get_next_sqwap_seq_reclaim(struct scan_control *sc, struct list_head *head, int gen, unsigned long max_seq, struct folio **evictable_folio)
 {
 	struct sequential_swap_context *sqwap = sc->sqwap_list;
-	bool ret_val = false;
-	while(sqwap)
-	{	
-		unsigned long flags;
-		struct sequential_swap_context *tmp_sqwap = sqwap;
-		spin_lock_irqsave(&sqwap->lock, flags);
-		tmp_sqwap = sqwap->next_sqwap;
-		spin_unlock_irqrestore(&sqwap->lock, flags);
-		if (ret_val)
-			return sqwap;
-		sqwap = tmp_sqwap;
+	if (sqwap)
+	{
+		trace_mm_vmscan_next_sqwap_seq_reclaim(sqwap);
+		return sqwap;
 	}
+	// we found no sqwap, if we priortize large then scan for a sqwap with large seq run
+	if (sc->prioritize_large) {
+		struct folio *folio;
+
+		list_for_each_entry_reverse(folio, head, lru) {
+			struct sequential_swap_context *folio_sqwap = folio_get_sqwap(folio);
+
+			if (folio_sqwap && is_sqwap_gen_seq_large(folio_sqwap, gen, max_seq, max_swap_around)) {
+				trace_mm_vmscan_next_sqwap_seq_reclaim(folio_sqwap);
+				*evictable_folio = folio;
+				return folio_sqwap;
+			}
+		}
+	}
+	trace_mm_vmscan_no_sqwap_seq_reclaim(NULL);
 	return NULL;
 }
 static bool is_sqwap_seq_reclaiming(struct scan_control *sc, struct sequential_swap_context *sqwap_to_find)
@@ -3540,6 +3547,77 @@ static bool suitable_to_scan(int total, int young)
 	return young * n >= total;
 }
 
+#ifdef CONFIG_VMA_RECLAIM
+/* When a run ends, update sqwap's longest run for that gen if this run is longer. */
+static void lru_gen_mm_walk_seq_record_run(struct lru_gen_mm_walk *walk)
+{
+	struct sequential_swap_context *sqwap = (struct sequential_swap_context *)walk->seq_sqwap;
+	size_t len = walk->seq_run_len;
+	int gen = walk->seq_last_gen;
+	pgoff_t start, end;
+
+	if (!sqwap || len == 0 || gen < 0 || gen >= MAX_NR_GENS)
+		return;
+	start = walk->seq_run_start;
+	end = walk->seq_next_expected_offset - 1;
+	DEFINE_MAX_SEQ(walk->lruvec);
+	// trace_mm_vmscan_seq_record_run(sqwap, gen, len, start, end, max_seq);
+	sqwap_update_longest_run(sqwap, gen, len, start, end, max_seq);
+}
+
+/*
+ * Single seq_run for PTE and PMD walk: extend run if folio starts at seq_next_expected_offset,
+ * same sqwap, same gen. Uses folio_nr_pages so huge pages are supported seamlessly.
+ */
+static void lru_gen_mm_walk_seq_run(struct lru_gen_mm_walk *walk, struct folio *folio)
+{
+	struct sequential_swap_context *folio_sqwap = folio_get_sqwap(folio);
+	pgoff_t off = (pgoff_t)get_folio_offset(folio);
+	unsigned long nr_pages = folio_nr_pages(folio);
+	int gen = folio_lru_gen(folio);
+
+	if (!folio_sqwap) {
+		lru_gen_mm_walk_seq_record_run(walk);
+		walk->seq_sqwap = NULL;
+		walk->seq_run_len = 0;
+		return;
+	}
+	if (folio_sqwap != (struct sequential_swap_context *)walk->seq_sqwap) {
+		lru_gen_mm_walk_seq_record_run(walk);
+		walk->seq_sqwap = folio_sqwap;
+		walk->seq_run_len = 1;
+		walk->seq_run_start = off;
+		walk->seq_next_expected_offset = off + nr_pages;
+		walk->seq_last_gen = gen;
+		// trace_mm_vmscan_seq_run(folio, off, gen, 1);
+		return;
+	}
+	/* Same sqwap: extend if folio starts at expected offset and same gen. */
+	if (gen >= 0 && walk->seq_run_len != 0 &&
+	    off == walk->seq_next_expected_offset && gen == walk->seq_last_gen) {
+		walk->seq_run_len++;
+		walk->seq_next_expected_offset = off + nr_pages;
+		// trace_mm_vmscan_seq_run(folio, off, gen, walk->seq_run_len);
+	} else {
+		lru_gen_mm_walk_seq_record_run(walk);
+		walk->seq_run_len = 1;
+		walk->seq_run_start = off;
+		walk->seq_next_expected_offset = off + nr_pages;
+		walk->seq_last_gen = gen;
+		// trace_mm_vmscan_seq_run(folio, off, gen, 1);
+	}
+}
+
+static void lru_gen_mm_walk_seq_flush(struct lru_gen_mm_walk *walk)
+{
+	struct sequential_swap_context *sqwap = (struct sequential_swap_context *)walk->seq_sqwap;
+	size_t run_len = walk->seq_run_len;
+	int gen = walk->seq_last_gen;
+	// trace_mm_vmscan_seq_flush(sqwap, run_len, gen);
+	lru_gen_mm_walk_seq_record_run(walk);
+}
+#endif
+
 static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 			   struct mm_walk *args)
 {
@@ -3588,8 +3666,12 @@ restart:
 		if (!folio)
 			continue;
 
-		if (!ptep_clear_young_notify(args->vma, addr, pte + i))
+		if (!ptep_clear_young_notify(args->vma, addr, pte + i)){
+			#ifdef CONFIG_VMA_RECLAIM
+			lru_gen_mm_walk_seq_run(walk, folio);
+			#endif
 			continue;
+		}
 
 		young++;
 		walk->mm_stats[MM_LEAF_YOUNG]++;
@@ -3602,8 +3684,14 @@ restart:
 		old_gen = folio_update_gen(folio, new_gen);
 		if (old_gen >= 0 && old_gen != new_gen)
 			update_batch_size(walk, folio, old_gen, new_gen);
+	#ifdef CONFIG_VMA_RECLAIM
+		lru_gen_mm_walk_seq_run(walk, folio);
+	#endif
 	}
 
+#ifdef CONFIG_VMA_RECLAIM
+	// trace_mm_vmscan_seq_flush((struct sequential_swap_context *)walk->seq_sqwap, walk->seq_run_len, walk->seq_last_gen);
+#endif
 	if (i < PTRS_PER_PTE && get_next_vma(PMD_MASK, PAGE_SIZE, args, &start, &end))
 		goto restart;
 
@@ -3673,8 +3761,12 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
 		if (!folio)
 			goto next;
 
-		if (!pmdp_clear_young_notify(vma, addr, pmd + i))
+		if (!pmdp_clear_young_notify(vma, addr, pmd + i)){
+			#ifdef CONFIG_VMA_RECLAIM
+					lru_gen_mm_walk_seq_run(walk, folio);
+			#endif
 			goto next;
+		}
 
 		walk->mm_stats[MM_LEAF_YOUNG]++;
 
@@ -3686,10 +3778,16 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
 		old_gen = folio_update_gen(folio, new_gen);
 		if (old_gen >= 0 && old_gen != new_gen)
 			update_batch_size(walk, folio, old_gen, new_gen);
+		#ifdef CONFIG_VMA_RECLAIM
+		lru_gen_mm_walk_seq_run(walk, folio);
+		#endif
 next:
 		i = i > MIN_LRU_BATCH ? 0 : find_next_bit(bitmap, MIN_LRU_BATCH, i) + 1;
 	} while (i <= MIN_LRU_BATCH);
 
+#ifdef CONFIG_VMA_RECLAIM
+	lru_gen_mm_walk_seq_flush(walk);
+#endif
 	arch_leave_lazy_mmu_mode();
 	spin_unlock(ptl);
 done:
@@ -3822,6 +3920,11 @@ static void walk_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
 	struct lruvec *lruvec = walk->lruvec;
 
 	walk->next_addr = FIRST_USER_ADDRESS;
+#ifdef CONFIG_VMA_RECLAIM
+	walk->seq_sqwap = NULL;
+	walk->seq_run_len = 0;
+	walk->seq_last_gen = -1;
+#endif
 
 	do {
 		DEFINE_MAX_SEQ(lruvec);
@@ -4582,14 +4685,14 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 		struct list_head *head = &lrugen->folios[gen][type][zone];
 		#ifdef CONFIG_VMA_RECLAIM
 		struct sequential_swap_context *sqwap = NULL;
-		int is_isolated = false;
+		int is_handled = false;
 		#endif
 
 		while (!list_empty(head)) {
 			struct folio *folio = lru_to_folio(head);
 			#ifdef CONFIG_VMA_RECLAIM
 			trace_mm_vmscan_scan_folios(folio, folio_needs_release(folio), folio_mapping(folio), folio_test_dirty(folio));
-			is_isolated = false;
+			is_handled = false;
 			sc->ignore_refs = false;
 			#endif
 			int delta = folio_nr_pages(folio);
@@ -4599,16 +4702,19 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 			VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
 			VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
 
-			scanned += delta;
-
-			if (sort_folio(lruvec, folio, sc, tier))
+			if (sort_folio(lruvec, folio, sc, tier)){
 				sorted += delta;
+				is_handled = true;
+				scanned += delta;
+			}
 			#ifdef CONFIG_VMA_RECLAIM
 			else if (check_isolate_folio(lruvec, folio, sc)) {
 				struct sequential_swap_context *orig_sqwap = folio_get_sqwap(folio);
 				if (is_candidate_dirty(folio) && orig_sqwap && max_swap_around){
+					struct folio *evictable_folio = NULL;
 					if (!is_sqwap_seq_reclaiming(sc, orig_sqwap)){
-						struct sequential_swap_context *tmp_sqwap = get_next_sqwap_seq_reclaim(sc);
+						DEFINE_MAX_SEQ(lruvec);
+						struct sequential_swap_context *tmp_sqwap = get_next_sqwap_seq_reclaim(sc, head, gen, max_seq, &evictable_folio);
 						if(tmp_sqwap)
 							sqwap = tmp_sqwap;
 						else
@@ -4617,13 +4723,14 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 					else 
 						sqwap = orig_sqwap;
 					// now we swap out its entire sequential set of folios
-					struct folio *evictable_folio = NULL;
 					if (sqwap_has_window(sqwap)){
 						// new window starts from previous end
 						evictable_folio = get_next_candidate(sqwap);
 						if (skip_folio_from_reclaim(evictable_folio, lruvec, type, zone, gen))
 							evictable_folio = NULL;
 					}
+					else if (evictable_folio)
+						evictable_folio = sqwap_start_new_seq_window(sqwap, evictable_folio, lruvec, type, zone, gen);
 					if(!evictable_folio) {
 						//falling back to the original vma. removing the seq sqwap and using the original sqwap.
 						if (sqwap != orig_sqwap) {
@@ -4634,6 +4741,8 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 					}
 					int seq_hits = 0;
 					while (evictable_folio && seq_hits < sqwap->swap_ahead_size) {
+						if (!folio_test_lru(evictable_folio))
+							break;
 						delta = folio_nr_pages(evictable_folio);
 						VM_WARN_ON_ONCE_FOLIO((folio_lru_gen(evictable_folio) != gen), evictable_folio);
 						VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(evictable_folio), evictable_folio);
@@ -4644,18 +4753,21 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 						VM_WARN_ON_ONCE_FOLIO(folio_lruvec(evictable_folio) != lruvec, evictable_folio);
 
 						scanned += delta;
-						if (isolate_folio(folio_lruvec(evictable_folio), evictable_folio, sc)) {
+						BUG_ON(lruvec != folio_lruvec(evictable_folio));
+						if (evictable_folio == folio)
+							is_handled = true;
+						if (sort_folio(folio_lruvec(evictable_folio), evictable_folio, sc, tier)) {
+							sorted += delta;
+							break;
+						}
+						else if (isolate_folio(folio_lruvec(evictable_folio), evictable_folio, sc)) {
 							list_add(&evictable_folio->lru, list);
-							if (lruvec != folio_lruvec(evictable_folio))
-								BUG_ON(true);
-							isolated += delta;
 							seq_hits++;
+							isolated += delta;
 							if (is_candidate_dirty(evictable_folio))
 								sqwap_dirty_hit(sqwap);
 							else
 								sqwap_clean_hit(sqwap);
-							if (evictable_folio == folio)
-								is_isolated = true;
 						} else {
 							list_move(&evictable_folio->lru, &moved);
 							skipped_zone += delta;
@@ -4667,8 +4779,13 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 						sc->ignore_refs = seq_hits * 10 >= MIN_LRU_BATCH * 6; // if 60% were dirty. refs are ignored if there is a seq rec sqwap anyway
 						sqwap_abort_window(sqwap);
 						remove_from_seq_sqwap(sc, sqwap);
-						if (!is_isolated){
-							if(isolate_folio(lruvec, folio, sc)){
+						if (!is_handled){
+							delta = folio_nr_pages(folio);
+							is_handled = true;
+							scanned += delta;
+							if(sort_folio(lruvec, folio, sc, tier))
+								sorted += delta;
+							else if(isolate_folio(lruvec, folio, sc)){
 								list_add(&folio->lru, list);
 								isolated += delta;
 							}
@@ -4683,6 +4800,8 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 					}
 				}
 				else {
+					is_handled = true;
+					scanned += delta;
 					if(isolate_folio(lruvec, folio, sc)){
 						list_add(&folio->lru, list);
 						isolated += delta;
@@ -4702,6 +4821,7 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 			else {
 				list_move(&folio->lru, &moved);
 				skipped_zone += delta;
+				scanned += delta;
 			}
 
 			if (!--remaining || max(isolated, skipped_zone) >= MIN_LRU_BATCH)
@@ -6829,6 +6949,9 @@ unsigned long mem_cgroup_shrink_node(struct mem_cgroup *memcg,
 		.may_unmap = 1,
 		.reclaim_idx = MAX_NR_ZONES - 1,
 		.may_swap = !noswap,
+		#ifdef CONFIG_VMA_RECLAIM
+		.prioritize_large = true,
+		#endif
 	};
 
 	WARN_ON_ONCE(!current->reclaim_state);
@@ -6878,6 +7001,7 @@ unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 		#ifdef CONFIG_VMA_RECLAIM
 		.sqwap_list = NULL,
 		.len_sqwaps = 0,
+		.prioritize_large = true,
 		#endif
 	};
 	/*

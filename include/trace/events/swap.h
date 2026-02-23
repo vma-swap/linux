@@ -1307,6 +1307,22 @@ TRACE_EVENT(get_first_folio_in_seq,
     TP_printk("cur_folio=%p first_folio=%p steps=%lu start_index=%lu",
         __entry->cur_folio, __entry->first_folio, __entry->steps, __entry->start_index)
 );
+TRACE_EVENT(len_of_sequential_sequence,
+    TP_PROTO(struct folio *folio, unsigned long len, unsigned long max_len),
+    TP_ARGS(folio, len, max_len),
+    TP_STRUCT__entry(
+        __field(struct folio *, folio)
+        __field(unsigned long, len)
+        __field(unsigned long, max_len)
+    ),
+    TP_fast_assign(
+        __entry->folio = folio;
+        __entry->len = len;
+        __entry->max_len = max_len;
+    ),
+    TP_printk("folio=%p len=%lu max_len=%lu",
+        __entry->folio, __entry->len, __entry->max_len)
+);
 TRACE_EVENT(get_next_seq_candidate,
     TP_PROTO(struct sequential_swap_context *sqwap, struct folio *next),
     TP_ARGS(sqwap, next),
@@ -1320,6 +1336,48 @@ TRACE_EVENT(get_next_seq_candidate,
     ),
     TP_printk("sqwap=%p next=%p",
         __entry->sqwap, __entry->next)
+);
+TRACE_EVENT(sqwap_update_longest_run,
+    TP_PROTO(struct sequential_swap_context *sqwap, int gen, size_t size, pgoff_t start, pgoff_t end, unsigned long seq),
+    TP_ARGS(sqwap, gen, size, start, end, seq),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(int, gen)
+        __field(size_t, size)
+        __field(pgoff_t, start)
+        __field(pgoff_t, end)
+        __field(unsigned long, seq)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->gen = gen;
+        __entry->size = size;
+        __entry->start = start;
+        __entry->end = end;
+        __entry->seq = seq;
+    ),
+    TP_printk("sqwap=%p gen=%d size=%lu start=%lu end=%lu seq=%lu",
+        __entry->sqwap, __entry->gen, __entry->size, __entry->start, __entry->end, __entry->seq)
+);
+TRACE_EVENT(is_sqwap_gen_seq_large,
+    TP_PROTO(struct sequential_swap_context *sqwap, int gen, unsigned long max_seq, unsigned long threshold, size_t size),
+    TP_ARGS(sqwap, gen, max_seq, threshold, size),
+    TP_STRUCT__entry(
+        __field(struct sequential_swap_context *, sqwap)
+        __field(int, gen)
+        __field(unsigned long, max_seq)
+        __field(unsigned long, threshold)
+        __field(size_t, size)
+    ),
+    TP_fast_assign(
+        __entry->sqwap = sqwap;
+        __entry->gen = gen;
+        __entry->max_seq = max_seq;
+        __entry->threshold = threshold;
+        __entry->size = size;
+    ),
+    TP_printk("sqwap=%p gen=%d max_seq=%lu threshold=%lu size=%lu",
+        __entry->sqwap, __entry->gen, __entry->max_seq, __entry->threshold, __entry->size)
 );
 #endif /* CONFIG_VMA_RECLAIM */
 #endif /* _TRACE_SWAP_H */
