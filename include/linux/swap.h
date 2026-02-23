@@ -360,6 +360,13 @@ struct swap_info_struct {
 };
 
 #ifdef CONFIG_VMA_RECLAIM
+struct sqwap_gen_run {
+	size_t size;           /* number of folios in the run */
+	pgoff_t start;         /* first offset in the run */
+	pgoff_t end;           /* last offset in the run */
+	unsigned long seq;     /* max_seq when observed; used to detect gen cycle staleness */
+};
+
 struct sequential_swap_context {
 	struct xarray *xa;
 	spinlock_t lock;
@@ -373,6 +380,7 @@ struct sequential_swap_context {
 	size_t seq_dirty_hits;
 	struct swap_info_struct *si;
 	struct sequential_swap_context *next_sqwap;
+	struct sqwap_gen_run gen_run[MAX_NR_GENS];
 };
 
 void init_sequential_swap_context(struct sequential_swap_context *sqwap, struct swap_info_struct *si, struct xarray *xa);
@@ -387,6 +395,7 @@ struct folio *get_next_seq_candidate(struct sequential_swap_context *sqwap,
 struct folio *get_next_candidate(struct sequential_swap_context *sqwap);
 struct folio *get_next_seq_candidate_for_folio(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
 struct folio *sqwap_start_new_seq_window(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
+unsigned long len_of_sequntial_sequence(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen, unsigned long max_len);
 bool sqwap_has_window(struct sequential_swap_context *sqwap);
 void sqwap_abort_window(struct sequential_swap_context *sqwap);
 void sqwap_clean_hit(struct sequential_swap_context *sqwap);
@@ -394,6 +403,16 @@ void sqwap_dirty_hit(struct sequential_swap_context *sqwap);
 bool __is_sqwap_single_io_stream(struct sequential_swap_context *sqwap);
 bool skip_folio_from_reclaim(struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen);
 unsigned long get_folio_offset(struct folio *folio);
+void sqwap_update_longest_run(struct sequential_swap_context *sqwap, int gen, size_t size, pgoff_t start, pgoff_t end, unsigned long seq);
+bool is_sqwap_gen_seq_large(struct sequential_swap_context *sqwap, int gen, unsigned long max_seq, unsigned long threshold);
+
+/* True if gen_run[gen] is from the current cycle (safe to use for reclaim). */
+static inline bool sqwap_gen_run_valid(const struct sequential_swap_context *sqwap, int gen, unsigned long max_seq)
+{
+	if (gen < 0 || gen >= MAX_NR_GENS)
+		return false;
+	return sqwap->gen_run[gen].seq != 0 && (max_seq - sqwap->gen_run[gen].seq) < MAX_NR_GENS;
+}
 #endif
 
 static inline swp_entry_t page_swap_entry(struct page *page)

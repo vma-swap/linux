@@ -1419,8 +1419,10 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 	struct swap_info_struct *si, *old_si = NULL;
 
 	if (folio_test_anon(folio)){
-		struct anon_vma *anon_vma = folio_anon_vma(folio);
-		BUG_ON(!anon_vma);
+		struct anon_vma *anon_vma = folio_get_anon_vma(folio);
+
+		if (!anon_vma)
+			return NULL; /* folio unmapped or anon_vma gone (e.g. process exited) */
 		si = READ_ONCE(anon_vma->si);
 		if (!si){
 			// it could be that this anon_vma was created before swapon so lets try to allocate an si for it.
@@ -1456,6 +1458,17 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 				anon_vma_unlock_read(anon_vma);
 			}
 		}
+		trace_get_swap_info_from_folio(folio, si, folio_test_anon(folio), folio_is_shmem(folio));
+		#ifdef CONFIG_VMA_RECLAIM
+		if (si) {
+			struct sequential_swap_context *sqwap = anon_vma->sqwap;
+
+			if (sqwap)
+				WRITE_ONCE(sqwap->si, si);
+		}
+		#endif
+		put_anon_vma(anon_vma);
+		return si;
 	}
 	else if (folio_is_shmem(folio)){
 		struct inode *inode = folio_inode(folio);
@@ -1482,8 +1495,13 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 	}
 	trace_get_swap_info_from_folio(folio, si, folio_test_anon(folio), folio_is_shmem(folio));
 	#ifdef CONFIG_VMA_RECLAIM
-	if (si)
-		WRITE_ONCE(folio_get_sqwap(folio)->si, si);
+	if (si) {
+		struct sequential_swap_context *sqwap = folio_get_sqwap(folio);
+		if (sqwap)
+			WRITE_ONCE(sqwap->si, si);
+		else 
+			printk(KERN_ERR "get_swap_info_from_folio: sqwap is NULL for folio %p", folio);
+	}
 	#endif
 	return si;
 }

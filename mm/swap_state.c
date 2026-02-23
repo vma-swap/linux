@@ -806,9 +806,52 @@ void init_sequential_swap_context(struct sequential_swap_context *sqwap, struct 
 	sqwap->window_end = 0;
 	sqwap->seq_dirty_hits = 0;
 	sqwap->next_sqwap = NULL;
+	for (int i = 0; i < MAX_NR_GENS; i++) {
+		sqwap->gen_run[i].size = 0;
+		sqwap->gen_run[i].seq = 0;
+	}
 	WRITE_ONCE(sqwap->si, si);
 	BUG_ON(!xa);
 	sqwap->xa = xa;
+}
+
+/*
+ * Update longest run for gen. Only overwrite if (a) stored run is stale (gen has
+ * cycled: seq advanced by MAX_NR_GENS or more), or (b) same cycle and this run is longer.
+ * This avoids comparing a new gen=1 run with an old gen=1 run from a previous cycle.
+ */
+void sqwap_update_longest_run(struct sequential_swap_context *sqwap, int gen, size_t size, pgoff_t start, pgoff_t end, unsigned long seq)
+{
+	unsigned long flags;
+	struct sqwap_gen_run *r;
+
+	if (gen < 0 || gen >= MAX_NR_GENS || size == 0)
+		return;
+	spin_lock_irqsave(&sqwap->lock, flags);
+	r = &sqwap->gen_run[gen];
+	if (r->seq == 0 || (seq - r->seq) >= MAX_NR_GENS) {
+		/* First observation or gen has cycled; take current run. */
+		// trace_sqwap_update_longest_run(sqwap, gen, size, start, end, seq);
+		r->size = size;
+		r->start = start;
+		r->end = end;
+		r->seq = seq;
+	} else if (size > r->size) {
+		r->size = size;
+		r->start = start;
+		r->end = end;
+		r->seq = seq;
+		// trace_sqwap_update_longest_run(sqwap, gen, size, start, end, seq);
+	}
+	spin_unlock_irqrestore(&sqwap->lock, flags);
+}
+
+bool is_sqwap_gen_seq_large(struct sequential_swap_context *sqwap, int gen, unsigned long max_seq, unsigned long threshold)
+{
+	if (!sqwap_gen_run_valid(sqwap, gen, max_seq))
+		return false;
+	trace_is_sqwap_gen_seq_large(sqwap, gen, max_seq, threshold, sqwap->gen_run[gen].size);
+	return sqwap->gen_run[gen].size >= threshold;
 }
 
 
@@ -1010,6 +1053,18 @@ struct folio *get_next_seq_candidate_for_folio(struct sequential_swap_context *s
 	bool skip_folio = skip_folio_from_reclaim(next, lruvec, type, zone, gen);
 	trace_get_next_seq_candidate_for_folio(folio, is_shmem, is_anon, index, next, skip_folio);
 	return skip_folio ? NULL : next;
+}
+
+unsigned long len_of_sequntial_sequence(struct sequential_swap_context *sqwap, struct folio *folio, struct lruvec *lruvec, int type, int zone, int gen, unsigned long max_len)
+{
+	unsigned long len = 1;
+	struct folio *next = folio;
+
+	while ((next = get_next_seq_candidate_for_folio(sqwap, next, lruvec, type, zone, gen)) != NULL && len < max_len)
+		len++;
+
+	trace_len_of_sequential_sequence(folio, len, max_len);
+	return len;
 }
 
 /*
