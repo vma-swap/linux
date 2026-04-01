@@ -1377,8 +1377,10 @@ static void shmem_evict_inode(struct inode *inode)
 #ifdef CONFIG_SWAP_VMA
 	{
 		struct swap_info_struct *si = READ_ONCE(info->si);
-		if (si)
+		if (si) {
+			remove_swap_cache_folios_for_si(si);
 			recycle_si_to_bin(si);
+		}
 		WRITE_ONCE(info->si, NULL);
 	}
 #ifdef CONFIG_VMA_RECLAIM
