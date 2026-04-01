@@ -129,6 +129,7 @@ static inline void anon_vma_free(struct anon_vma *anon_vma)
 
 		if (si) {
 			WRITE_ONCE(anon_vma->si, NULL);
+			remove_swap_cache_folios_for_si(si);
 			recycle_si_to_bin(si);
 		}
 #ifdef CONFIG_VMA_RECLAIM
@@ -1757,12 +1758,10 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 	 */
 
 #ifdef CONFIG_SWAP_VMA
-	/*
-	 * Remove folio from anon_vma->xpages when fully unmapped.
-	 * Only do this for anonymous folios - file-backed folios have
-	 * their mapping pointing to address_space, not anon_vma.
-	 * Use atomic_inc_not_zero to safely get a reference in case
-	 * the anon_vma is being torn down concurrently.
+	/* Remove folio from anon_vma->xpages when fully unmapped. Do not remove
+	 * from swap cache here: a folio can lose its rmap when swapped out and
+	 * is still valid in the swap cache. Cleanup of swap cache for this si
+	 * happens at recycle time (anon_vma free) in remove_swap_cache_folios_for_si().
 	 */
 	if (!folio_mapped(folio) && folio_test_anon(folio)) {
 		struct anon_vma *anon_vma = (struct anon_vma *)

@@ -274,17 +274,20 @@ void recycle_si_to_bin(struct swap_info_struct *si)
 		BUG_ON(1);
 		return;
 	}
-	// check that si is not on any list
 	BUG_ON(!list_empty(&si->bin_list));
-	// take the swap_lock to prevent the si from being used
 	spin_lock(&swap_lock);
 	spin_lock(&si->lock);
+	/*
+	 * Caller (e.g. anon_vma_free) must have called remove_swap_cache_folios_for_si(si)
+	 * first, so every folio that was in the swap cache for this si has been removed.
+	 * Therefore all slots are free and inuse_pages must be 0. If not, something
+	 * else holds a reference to a slot (bug).
+	 */
+	BUG_ON(atomic_long_read(&si->inuse_pages) != 0);
 	memset(si->swap_map, 0, si->max);
 	si->swap_map[0] = SWAP_MAP_BAD;
 	if (si->zeromap)
 		bitmap_zero(si->zeromap, si->max);
-	// TODO: extremely improtant! check that usage us zero of we could have some weird bug where a folio is pointing to an si that has been recycled and is now being used by another mapping
-	// BUG_ON(atomic_long_read(&si->inuse_pages) != 0);
 	/*
 	 * Reset counter to 0 but do NOT set OFFLIST_BIT. The device stays
 	 * on avail_lists - we don't care about avail_list management in

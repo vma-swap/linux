@@ -287,6 +287,44 @@ void clear_shadow_from_swap_cache(int type, unsigned long begin,
 	}
 }
 
+#ifdef CONFIG_SWAP_VMA
+/*
+ * Remove every folio in the swap cache that belongs to @si. Called from
+ * anon_vma_free (and equivalent) before recycle_si_to_bin so that when we
+ * recycle the si, no folios in the swap cache reference it. A folio can be in
+ * the swap cache without rmap (e.g. swapped out); we remove those here.
+ */
+void remove_swap_cache_folios_for_si(struct swap_info_struct *si)
+{
+	unsigned long offset;
+	unsigned int type = si->type;
+
+	for (offset = 1; offset < si->max; offset++) {
+		swp_entry_t entry = swp_entry(type, offset);
+		struct address_space *address_space = swap_address_space(entry);
+		pgoff_t index = swap_cache_index(entry);
+		struct folio *folio;
+
+		folio = filemap_get_folio(address_space, index);
+		if (IS_ERR(folio))
+			continue;
+		folio_lock(folio);
+		if (!folio_test_swapcache(folio)) {
+			folio_unlock(folio);
+			folio_put(folio);
+			continue;
+		}
+		if (folio_test_writeback(folio))
+			folio_wait_writeback(folio);
+		if(!folio_free_swap(folio))
+			printk("folio_free_swap failed for folio %p\n", folio);
+		folio_unlock(folio);
+		folio_put(folio);
+		cond_resched();
+	}
+}
+#endif
+
 /*
  * If we are the only user, then try to free up the swap cache.
  *
