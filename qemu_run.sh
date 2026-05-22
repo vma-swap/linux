@@ -20,8 +20,7 @@ QEMU_CMD="qemu-system-x86_64 \
         -smp 1 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \
-        -drive file=/scratch/bullseye.img,format=raw \
-        -drive file=/scratch/vm_swap.img,format=raw,if=virtio \
+        -drive file=./vm_image/trixie.img,format=raw \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:10021-:22 \
         -device virtio-net-pci,netdev=net0 \
         -enable-kvm \

@@ -183,7 +183,7 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
-image/
+vm_image/
 vm1.qcow2
 vm2.qcow2
 vm.log

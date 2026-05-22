@@ -1513,6 +1513,9 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struc
 	if (!si)
 		goto noswap;
 	if (folio_offset == ULONG_MAX || folio_offset >= si->pages || folio_offset < 0){
+
+		//enlagre_si(si, folio);
+		//enlagre_si(si, folio->anon_vma);
 		printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages);
 		goto noswap;
 	}
