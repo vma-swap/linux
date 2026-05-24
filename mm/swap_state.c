@@ -969,6 +969,7 @@ struct sequential_swap_context *vma_get_sqwap(struct vm_area_struct *vma)
 	BUG_ON(!sqwap);
 	return sqwap;
 }
+EXPORT_SYMBOL(vma_get_sqwap);
 
 struct sequential_swap_context *folio_get_sqwap(struct folio *folio)
 {

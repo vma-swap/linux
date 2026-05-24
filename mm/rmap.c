@@ -660,6 +660,24 @@ out:
 
 	return anon_vma;
 }
+EXPORT_SYMBOL(folio_get_anon_vma);
+
+struct anon_vma *vma_get_anon_vma(const struct vm_area_struct *vma)
+{
+	struct anon_vma *anon_vma = NULL;
+
+	rcu_read_lock();
+	if (vma->anon_vma) {
+		anon_vma = vma->anon_vma;
+		if (!atomic_inc_not_zero(&anon_vma->refcount))
+			anon_vma = NULL;
+	}
+	rcu_read_unlock();
+
+	return anon_vma;
+}
+EXPORT_SYMBOL(vma_get_anon_vma);
+
 
 /*
  * Similar to folio_get_anon_vma() except it locks the anon_vma.
