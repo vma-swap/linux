@@ -21,6 +21,7 @@ QEMU_CMD="qemu-system-x86_64 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \
         -drive file=./vm_image/trixie.img,format=raw \
+        -virtfs local,path=/usr/src/tests,mount_tag=tests,security_model=none \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:10021-:22 \
         -device virtio-net-pci,netdev=net0 \
         -enable-kvm \
