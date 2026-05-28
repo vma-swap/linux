@@ -1517,8 +1517,7 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struc
 		goto noswap;
 	}
 	BUG_ON(n_goal != 1);
-	
-}
+
 #else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 {
