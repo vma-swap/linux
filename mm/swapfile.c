@@ -1507,16 +1507,44 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 
 #ifdef CONFIG_SWAP_VMA
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
-{
-	unsigned long folio_offset = get_folio_offset(folio);
-	struct swap_info_struct *si = get_swap_info_from_folio(folio);
-	if (!si)
-		goto noswap;
-	if (folio_offset == ULONG_MAX || folio_offset >= si->pages || folio_offset < 0){
-		printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages);
-		goto noswap;
-	}
-	BUG_ON(n_goal != 1);
+{ 
+    unsigned long folio_offset = get_folio_offset(folio); //always negative 
+    struct swap_info_struct *si = get_swap_info_from_folio(folio); 
+    if (!si) 
+        goto noswap; 
+    if (folio_offset >= si->pages){ 
+        //enlarge_si(si,folio->anon_vma) - we will enlarge the swap file directed from swap info 
+        struct anon_vma *folio_anon_vma = folio_get_anon_vma(folio); 
+        if (!folio_anon_vma) { 
+            printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, failed to get anon_vma for folio %p\n", folio_offset, si->pages, folio); 
+            goto noswap; 
+        } 
+        // as anon_vma offsets are in pages 
+        loff_t size_in_bytes_all_pages = (loff_t)si->pages * PAGE_SIZE; 
+        // as vfs_allocate accepts bytes
+		//amount_of_pages_to_increase = folio_anon_vma->end_vm_offset - folio_anon_vma->base_vm_offset;
+        unsigned long target_pages = folio_anon_vma->end_vm_offset - folio_anon_vma->base_vm_offset;
+        int amount_of_pages_to_increase = target_pages - si->pages;
+        loff_t increase_len_bytes = (loff_t)amount_of_pages_to_increase * PAGE_SIZE; 
+        int retu; 
+        if (si->swap_file){ 
+            retu = vfs_fallocate(si->swap_file, 0,size_in_bytes_all_pages, increase_len_bytes); 
+            if (retu) { 
+                printk(KERN_ERR "get_swap_pages: vfs_fallocate failed with %d\n", retu); 
+                goto noswap; 
+            } 
+        // metadata updates 
+		}si->pages += amount_of_pages_to_increase; 
+        //gotta update "swap_map" - how? 
+    } 
+    else if (folio_offset < 0){ 
+		//UNREACHABLE CODE
+    } 
+    else if (folio_offset == ULONG_MAX){ 
+        printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages); 
+        goto noswap; 
+    } 
+    BUG_ON(n_goal != 1);
 
 #else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
