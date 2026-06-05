@@ -779,6 +779,7 @@ out:
 	rcu_read_unlock();
 	return anon_vma;
 }
+EXPORT_SYMBOL(folio_lock_anon_vma_read);
 
 #ifdef CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
 /*
@@ -2921,6 +2922,8 @@ void rmap_walk(struct folio *folio, struct rmap_walk_control *rwc)
 	else
 		rmap_walk_file(folio, rwc, false);
 }
+EXPORT_SYMBOL(rmap_walk);
+
 
 /* Like rmap_walk, but caller holds relevant rmap lock */
 void rmap_walk_locked(struct folio *folio, struct rmap_walk_control *rwc)

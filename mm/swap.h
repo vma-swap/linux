@@ -1,3 +1,7 @@
+#ifdef CONFIG_SWAP_VMA
+int get_swap_bin_count(int bin_index);
+#endif
+
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _MM_SWAP_H
 #define _MM_SWAP_H

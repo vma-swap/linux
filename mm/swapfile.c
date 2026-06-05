@@ -263,10 +263,12 @@ struct swap_info_struct *acquire_si_from_bin(unsigned long pages,
 		// no swap_info_struct found in this bin, try next bin
 		bin++;
 	}
+	//instead - return the biggest that exists - scan from the int bin and we go by -1 until we reach minimum - jntvo
 	return NULL;
 }
 
 EXPORT_SYMBOL_GPL(acquire_si_from_bin);
+
 
 void recycle_si_to_bin(struct swap_info_struct *si)
 {
@@ -300,6 +302,29 @@ void recycle_si_to_bin(struct swap_info_struct *si)
 	swap_bins_add_si(si);
 }
 EXPORT_SYMBOL_GPL(recycle_si_to_bin);
+
+
+int get_swap_bin_count(int bin_index)
+{
+	// Return the number of vacant swap_info_structs in the specified bin
+    struct swap_info_struct *si;
+    int count = 0;
+    
+    if (!IS_ENABLED(CONFIG_SWAP_VMA) || !swap_bins_ready || 
+        bin_index < 0 || bin_index >= SWAP_BIN_MAX_CNT)
+        return -1;
+
+    spin_lock(&swap_bins[bin_index].bin_lock);
+    list_for_each_entry(si, &swap_bins[bin_index].list, bin_list) {
+        count++;
+    }
+    spin_unlock(&swap_bins[bin_index].bin_lock);
+    
+    return count;
+}
+EXPORT_SYMBOL(get_swap_bin_count);
+
+
 #endif /* CONFIG_SWAP_VMA */
 
 static bool swap_is_has_cache(struct swap_info_struct *si,
@@ -1507,8 +1532,17 @@ static struct swap_info_struct *get_swap_info_from_folio(struct folio *folio)
 
 #ifdef CONFIG_SWAP_VMA
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struct folio *folio)
-{ 
-    unsigned long folio_offset = get_folio_offset(folio); //always negative 
+{
+	unsigned long folio_offset = get_folio_offset(folio);
+	struct swap_info_struct *si = get_swap_info_from_folio(folio);
+	if (!si)
+		goto noswap;
+	if (folio_offset == ULONG_MAX || folio_offset >= si->pages || folio_offset < 0){
+		printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages);
+		goto noswap;
+	}
+	BUG_ON(n_goal != 1);
+    /*unsigned long folio_offset = get_folio_offset(folio); //always negative 
     struct swap_info_struct *si = get_swap_info_from_folio(folio); 
     if (!si) 
         goto noswap; 
@@ -1534,18 +1568,16 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order, struc
                 goto noswap; 
             } 
         // metadata updates 
-		}si->pages += amount_of_pages_to_increase; 
-        //gotta update "swap_map" - how? 
-    } 
-    else if (folio_offset < 0){ 
-		//UNREACHABLE CODE
+		}
+		si->pages += amount_of_pages_to_increase; 
+        //gotta update "swap_map" - how?
     } 
     else if (folio_offset == ULONG_MAX){ 
         printk(KERN_ERR "get_swap_pages: folio_offset=%lu, si->pages=%u, folio_offset < 0", folio_offset, si->pages); 
         goto noswap; 
     } 
     BUG_ON(n_goal != 1);
-
+*/
 #else
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
 {
