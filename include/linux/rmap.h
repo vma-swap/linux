@@ -64,6 +64,7 @@ struct anon_vma {
 
 	/* Interval tree of private "related" vmas */
 	struct rb_root_cached rb_root;
+	struct file *named_swap_file;
 };
 
 /*
