@@ -32,6 +32,7 @@
 #include <linux/memremap.h>
 #include <linux/slab.h>
 #include <linux/cacheinfo.h>
+#include <linux/printk.h>
 
 struct mempolicy;
 struct anon_vma;
@@ -601,6 +602,7 @@ struct vm_fault {
 					 * page table to avoid allocation from
 					 * atomic context.
 					 */
+	struct file *vm_file; // the actual file faulted on.
 };
 
 /*
@@ -928,6 +930,24 @@ static inline void vm_flags_mod(struct vm_area_struct *vma,
 	vma_start_write(vma);
 	__vm_flags_mod(vma, set, clear);
 }
+
+#define NAMED_SWAP_PATH_LEN	256
+extern int named_swap_min_vma_size;
+extern char named_swap_root[NAMED_SWAP_PATH_LEN];
+int proc_named_swap_root(const struct ctl_table *table, int write,
+			 void *buffer, size_t *lenp, loff_t *ppos);
+unsigned long named_swap_total_pages(void);
+struct file *named_swap_prepare_mmap(unsigned long len, unsigned long *flag);
+char *named_swap_file_path(struct file *file, char *buf, int buflen);
+void named_swap_link(struct vm_area_struct *vma);
+void named_swap_unlink(struct anon_vma *anon_vma);
+int named_swap_file_index(struct file *file, u64 *index);
+bool named_swap_single_vma_mapping(struct vm_area_struct *vma);
+unsigned int named_swap_same_file_pte_count(struct vm_area_struct *vma,
+					   unsigned long address);
+void setup_named_swap_vmf(struct vm_fault *vmf);
+void named_swap_store_pte(struct mm_struct *mm, struct vm_area_struct *vma,
+			  unsigned long address, pte_t *pte);
 
 static inline void vma_set_anonymous(struct vm_area_struct *vma)
 {
@@ -2632,8 +2652,13 @@ static inline void dec_mm_counter(struct mm_struct *mm, int member)
 /* Optimized variant when folio is already known not to be anon */
 static inline int mm_counter_file(struct folio *folio)
 {
+	unsigned long mapping = (unsigned long)folio->mapping;
+
 	if (folio_test_swapbacked(folio))
 		return MM_SHMEMPAGES;
+	if (mapping && !(mapping & PAGE_MAPPING_FLAGS) &&
+	    test_bit(9, &folio->mapping->flags))
+		return MM_NAMED_SWAPPAGES;
 	return MM_FILEPAGES;
 }
 
@@ -2648,7 +2673,8 @@ static inline unsigned long get_mm_rss(struct mm_struct *mm)
 {
 	return get_mm_counter(mm, MM_FILEPAGES) +
 		get_mm_counter(mm, MM_ANONPAGES) +
-		get_mm_counter(mm, MM_SHMEMPAGES);
+		get_mm_counter(mm, MM_SHMEMPAGES) +
+		get_mm_counter(mm, MM_NAMED_SWAPPAGES);
 }
 
 static inline unsigned long get_mm_hiwater_rss(struct mm_struct *mm)

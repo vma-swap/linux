@@ -16,7 +16,7 @@ done
 # Build the QEMU command
 sudo chmod 0777 /dev/kvm
 QEMU_CMD="qemu-system-x86_64 \
-        -m 525M \
+        -m 130M \
         -smp 1 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \

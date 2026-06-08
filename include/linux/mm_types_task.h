@@ -28,6 +28,7 @@ enum {
 	MM_ANONPAGES,	/* Resident anonymous pages */
 	MM_SWAPENTS,	/* Anonymous swap entries */
 	MM_SHMEMPAGES,	/* Resident shared memory pages */
+	MM_NAMED_SWAPPAGES,	/* Resident named swap pages */
 	NR_MM_COUNTERS
 };
 

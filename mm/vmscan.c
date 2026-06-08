@@ -70,6 +70,8 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/events/named_swap.h>
 
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
@@ -675,6 +677,11 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 
 	if (folio_clear_dirty_for_io(folio)) {
 		int res;
+		bool named_swap = mapping_named_swap(mapping);
+		pgoff_t named_swap_pgoff = folio->index;
+		unsigned long named_swap_pfn = folio_pfn(folio);
+		unsigned int named_swap_order = folio_order(folio);
+		int named_swap_mapcount = folio_mapcount(folio);
 		struct writeback_control wbc = {
 			.sync_mode = WB_SYNC_NONE,
 			.nr_to_write = SWAP_CLUSTER_MAX,
@@ -706,6 +713,11 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 			folio_clear_reclaim(folio);
 		}
 		trace_mm_vmscan_write_folio(folio);
+		if (named_swap)
+			trace_named_swap_writeback(mapping, named_swap_pgoff,
+						   named_swap_pfn,
+						   named_swap_order,
+						   named_swap_mapcount, res);
 		node_stat_add_folio(folio, NR_VMSCAN_WRITE);
 		return PAGE_SUCCESS;
 	}
@@ -3380,6 +3392,31 @@ static bool suitable_to_scan(int total, int young)
 
 	/* suitable if the average number of young PTEs per cacheline is >=1 */
 	return young * n >= total;
+}
+
+static void walk_update_folio(struct lru_gen_mm_walk *walk, struct folio *folio,
+			      int new_gen, bool dirty)
+{
+	int old_gen;
+
+	if (!folio)
+		return;
+
+	if (dirty && !folio_test_dirty(folio) &&
+	    !folio_test_named_swap(folio) &&
+	    !(folio_test_anon(folio) && folio_test_swapbacked(folio) &&
+	      !folio_test_swapcache(folio)))
+		folio_mark_dirty(folio);
+
+	if (walk) {
+		old_gen = folio_update_gen(folio, new_gen);
+		if (old_gen >= 0 && old_gen != new_gen)
+			update_batch_size(walk, folio, old_gen, new_gen);
+	} else if (lru_gen_set_refs(folio)) {
+		old_gen = folio_lru_gen(folio);
+		if (old_gen >= 0 && old_gen != new_gen)
+			folio_activate(folio);
+	}
 }
 
 static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,

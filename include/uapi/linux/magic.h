@@ -103,5 +103,6 @@
 #define DEVMEM_MAGIC		0x454d444d	/* "DMEM" */
 #define SECRETMEM_MAGIC		0x5345434d	/* "SECM" */
 #define PID_FS_MAGIC		0x50494446	/* "PIDF" */
+#define NAMED_SWAP_MAGIC	0xc001c001	/* "NSWAP" */
 
 #endif /* __LINUX_MAGIC_H__ */

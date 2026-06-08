@@ -509,7 +509,10 @@ struct address_space {
 	/* number of thp, only for non-shmem files */
 	atomic_t		nr_thps;
 #endif
-	struct rb_root_cached	i_mmap;
+	union {
+		struct rb_root_cached	i_mmap;
+		struct anon_vma		*anon_vma;
+	};
 	unsigned long		nrpages;
 	pgoff_t			writeback_index;
 	const struct address_space_operations *a_ops;
@@ -523,7 +526,7 @@ struct address_space {
 	/*
 	 * On most architectures that alignment is already the case; but
 	 * must be enforced here for CRIS, to let the least significant bit
-	 * of struct page's "mapping" pointer be used for PAGE_MAPPING_ANON.
+	 * of struct page's "mapping" pointer be used for mapping_anonymous.
 	 */
 
 /* XArray tags, for tagging dirty and writeback pages in the pagecache. */
