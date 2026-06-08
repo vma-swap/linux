@@ -1633,6 +1633,9 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		nr = swap_pte_batch(pte, max_nr, ptent);
 		rss[MM_SWAPENTS] -= nr;
 		free_swap_and_cache_nr(entry, nr);
+	} else if (is_named_swap_entry(entry)) {
+		if (vma_is_named_swap(vma))
+			named_swap_zap_nonpresent(vma, addr, entry);
 	} else if (is_migration_entry(entry)) {
 		struct folio *folio = pfn_swap_entry_folio(entry);
 
@@ -5139,11 +5142,11 @@ void set_pte_range(struct vm_fault *vmf, struct folio *folio,
 	if (unlikely(vmf_orig_pte_uffd_wp(vmf)))
 		entry = pte_mkuffd_wp(entry);
 	/* copy-on-write page */
-	if (write && !(vma->vm_flags & VM_SHARED)) {
+	if (write && !(vma->vm_flags & VM_SHARED) && !vma_is_named_swap(vma)) {
 		VM_BUG_ON_FOLIO(nr != 1, folio);
 		folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
 		folio_add_lru_vma(folio, vma);
-	} else {
+	} else if (!(vma_is_named_swap(vma) && !(vmf->named_swap_alloc))) {
 		folio_add_file_rmap_ptes(folio, page, nr, vma);
 	}
 	set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr);
@@ -5182,7 +5185,8 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 	struct folio *folio;
 	vm_fault_t ret;
 	bool is_cow = (vmf->flags & FAULT_FLAG_WRITE) &&
-		      !(vma->vm_flags & VM_SHARED);
+		      !(vma->vm_flags & VM_SHARED) &&
+			  !vma_is_named_swap(vma);;
 	int type, nr_pages;
 	unsigned long addr;
 	bool needs_fallback = false;
@@ -5271,8 +5275,10 @@ fallback:
 
 	folio_ref_add(folio, nr_pages - 1);
 	set_pte_range(vmf, folio, page, nr_pages, addr);
-	type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
-	add_mm_counter(vma->vm_mm, type, nr_pages);
+	if (!(vma_is_named_swap(vma) && !vmf->named_swap_alloc)){
+		type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
+		add_mm_counter(vma->vm_mm, type, nr_pages);
+	}
 	ret = 0;
 
 unlock:
@@ -5422,25 +5428,67 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct folio *folio;
-	vm_fault_t ret;
+	struct folio *old_folio = NULL;
+	vm_fault_t ret, tmp;
+	bool named_swap = vma_is_named_swap(vma);
 
 	ret = vmf_can_call_fault(vmf);
 	if (!ret)
 		ret = vmf_anon_prepare(vmf);
 	if (ret)
 		return ret;
+	if (named_swap) {
+		VM_BUG_ON(!(vmf->page));
+		old_folio = page_folio(vmf->page);
+	} else {
+		folio = folio_prealloc(vma->vm_mm, vma, vmf->address, false);
+		if (!folio)
+			return VM_FAULT_OOM;
 
-	folio = folio_prealloc(vma->vm_mm, vma, vmf->address, false);
-	if (!folio)
-		return VM_FAULT_OOM;
-
-	vmf->cow_page = &folio->page;
+		vmf->cow_page = &folio->page;
+	}
 
 	ret = __do_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		goto uncharge_out;
 	if (ret & VM_FAULT_DONE_COW)
 		return ret;
+
+	if (named_swap) {
+		struct folio *new_folio = page_folio(vmf->page);
+
+		if (copy_mc_user_highpage(vmf->page, &old_folio->page,
+					  vmf->address, vma)) {
+			unlock_page(vmf->page);
+			put_page(vmf->page);
+			return VM_FAULT_HWPOISON;
+		}
+		__folio_mark_uptodate(new_folio);
+
+		folio_unlock(new_folio);
+		tmp = do_page_mkwrite(vmf, new_folio);
+		if (unlikely(!tmp ||
+			     (tmp & (VM_FAULT_ERROR | VM_FAULT_NOPAGE)))) {
+			folio_put(new_folio);
+			return tmp;
+		}
+
+		ret |= finish_fault(vmf);
+		if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE |
+				    VM_FAULT_RETRY))) {
+			if (folio_test_locked(new_folio))
+				folio_unlock(new_folio);
+			folio_put(new_folio);
+			return ret;
+		}
+		//delete the old folio
+		dec_mm_counter(vma->vm_mm, MM_NAMED_SWAPPAGES);
+		VM_BUG_ON_FOLIO(folio_order(old_folio), old_folio);
+		folio_remove_rmap_ptes(old_folio, &old_folio->page, 1, vma);
+		folio_put(old_folio);
+
+		return fault_dirty_shared_page(vmf);
+	}
 
 	if (copy_mc_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma)) {
 		ret = VM_FAULT_HWPOISON;
@@ -5456,7 +5504,8 @@ unlock:
 		goto uncharge_out;
 	return ret;
 uncharge_out:
-	folio_put(folio);
+	if (!named_swap)
+		folio_put(folio);
 	return ret;
 }
 
@@ -5539,9 +5588,24 @@ static vm_fault_t do_fault(struct vm_fault *vmf)
 
 			pte_unmap_unlock(vmf->pte, vmf->ptl);
 		}
-	} else if (!(vmf->flags & FAULT_FLAG_WRITE))
+	} 
+	else if (vmf->pte && pte_present(vmf->orig_pte))
+	{
+		VM_BUG_ON_VMA(!vma_is_named_swap(vma), vma);
+		vmf->page = vm_normal_page(vma, vmf->address, vmf->orig_pte);
+		VM_BUG_ON_VMA(!(vmf->page), vma);
+		pte_unmap(vmf->pte);
+		vmf->pte = NULL;
+		if (folio_mapcount(page_folio(vmf->page)) == 1)
+			return do_shared_fault(vmf);
+		else {
+			vmf->named_swap_alloc = true;
+			return do_cow_fault(vmf);
+		} 
+	}
+	else if (!(vmf->flags & FAULT_FLAG_WRITE))
 		ret = do_read_fault(vmf);
-	else if (!(vma->vm_flags & VM_SHARED))
+	else if (!(vma->vm_flags & VM_SHARED) && !vma_is_named_swap(vma))
 		ret = do_cow_fault(vmf);
 	else
 		ret = do_shared_fault(vmf);
@@ -5844,6 +5908,7 @@ split:
 static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 {
 	pte_t entry;
+	vm_fault_t ret;
 
 	if (unlikely(pmd_none(*vmf->pmd))) {
 		/*
@@ -5883,6 +5948,25 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			vmf->pte = NULL;
 		}
 	}
+	if (vma_is_named_swap(vmf->vma)) {
+		if (vmf->pte && !pte_present(vmf->orig_pte) &&
+		    is_named_swap_pte(vmf->orig_pte))
+			setup_named_swap_vmf(vmf);
+		else {
+			if (!vmf->pte)
+				vmf->named_swap_alloc = true;
+			ret = vmf_anon_prepare(vmf);
+			if (unlikely(ret))
+				return ret;
+			if (unlikely(!(vmf->vma->anon_vma->named_swap_file)))
+				named_swap_link(vmf->vma);
+			vmf->vm_file = vmf->vma->vm_file;
+		}
+		//we always treat named_swap faults as a missing pte.
+		return do_pte_missing(vmf);
+	}
+
+	vmf->vm_file = vmf->vma->vm_file;
 
 	if (!vmf->pte)
 		return do_pte_missing(vmf);

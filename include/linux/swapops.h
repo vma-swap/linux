@@ -613,6 +613,36 @@ static inline int is_pmd_migration_entry(pmd_t pmd)
 }
 #endif  /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
 
+static inline int is_named_swap_entry(swp_entry_t entry)
+{
+	return unlikely(swp_type(entry) == SWP_NAMED_SWAP);
+}
+
+static inline swp_entry_t make_named_swap_entry(pgoff_t index)
+{
+	return swp_entry(SWP_NAMED_SWAP, index);
+}
+
+static inline pte_t make_named_swap_pte(pgoff_t index)
+{
+	return swp_entry_to_pte(make_named_swap_entry(index));
+}
+
+static inline bool is_named_swap_pte(pte_t pte)
+{
+	swp_entry_t entry;
+
+	if (!is_swap_pte(pte))
+		return false;
+
+	entry = pte_to_swp_entry(pte);
+	return is_named_swap_entry(entry);
+}
+static inline pgoff_t named_swap_entry_index(swp_entry_t entry)
+{
+	VM_BUG_ON(!is_named_swap_entry(entry));
+	return swp_offset(entry);
+}
 static inline int non_swap_entry(swp_entry_t entry)
 {
 	return swp_type(entry) >= MAX_SWAPFILES;

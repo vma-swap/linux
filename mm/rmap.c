@@ -64,6 +64,7 @@
 #include <linux/rmap.h>
 #include <linux/rcupdate.h>
 #include <linux/export.h>
+#include <linux/fs.h>
 #include <linux/memcontrol.h>
 #include <linux/mmu_notifier.h>
 #include <linux/migrate.h>
@@ -104,6 +105,7 @@ static inline struct anon_vma *anon_vma_alloc(void)
 		 * from fork, the root will be reset to the parents anon_vma.
 		 */
 		anon_vma->root = anon_vma;
+		anon_vma->named_swap_file = NULL;
 	}
 
 	return anon_vma;
@@ -112,7 +114,8 @@ static inline struct anon_vma *anon_vma_alloc(void)
 static inline void anon_vma_free(struct anon_vma *anon_vma)
 {
 	VM_BUG_ON(atomic_read(&anon_vma->refcount));
-
+	if (anon_vma->named_swap_file)
+		named_swap_unlink(anon_vma);
 	/*
 	 * Synchronize against folio_lock_anon_vma_read() such that
 	 * we can safely hold the lock without the anon_vma getting
@@ -567,15 +570,29 @@ struct anon_vma *folio_get_anon_vma(const struct folio *folio)
 {
 	struct anon_vma *anon_vma = NULL;
 	unsigned long anon_mapping;
+	struct address_space *mapping;
 
 	rcu_read_lock();
 	anon_mapping = (unsigned long)READ_ONCE(folio->mapping);
-	if ((anon_mapping & PAGE_MAPPING_FLAGS) != PAGE_MAPPING_ANON)
-		goto out;
-	if (!folio_mapped(folio))
-		goto out;
+	if ((anon_mapping & PAGE_MAPPING_FLAGS) == PAGE_MAPPING_ANON) {
+		if (!folio_mapped(folio))
+			goto out;
 
-	anon_vma = (struct anon_vma *) (anon_mapping - PAGE_MAPPING_ANON);
+		anon_vma = (struct anon_vma *) (anon_mapping - PAGE_MAPPING_ANON);
+	} else if (!(anon_mapping & PAGE_MAPPING_FLAGS) && anon_mapping) {
+		mapping = (struct address_space *)anon_mapping;
+		if (!mapping_named_swap(mapping))
+			goto out;
+		if (!folio_mapped(folio))
+			goto out;
+
+		anon_vma = READ_ONCE(mapping->anon_vma);
+		if (!anon_vma)
+			goto out;
+	} else {
+		goto out;
+	}
+
 	if (!atomic_inc_not_zero(&anon_vma->refcount)) {
 		anon_vma = NULL;
 		goto out;
@@ -600,6 +617,68 @@ out:
 }
 EXPORT_SYMBOL(folio_get_anon_vma);
 
+static struct anon_vma *folio_lock_named_swap_anon_vma_read(
+		const struct folio *folio, struct rmap_walk_control *rwc)
+{
+	struct address_space *mapping;
+	struct anon_vma *anon_vma = NULL;
+	unsigned long mapping_value;
+
+retry:
+	rcu_read_lock();
+	mapping_value = (unsigned long)READ_ONCE(folio->mapping);
+	if ((mapping_value & PAGE_MAPPING_FLAGS) || !mapping_value)
+		goto out;
+
+	mapping = (struct address_space *)mapping_value;
+	if (!mapping_named_swap(mapping))
+		goto out;
+	if (!folio_mapped(folio))
+		goto out;
+
+	anon_vma = READ_ONCE(mapping->anon_vma);
+	if (!anon_vma)
+		goto out;
+	if (!atomic_inc_not_zero(&anon_vma->refcount)) {
+		anon_vma = NULL;
+		goto out;
+	}
+
+	if (rwc && rwc->try_lock) {
+		if (!anon_vma_trylock_read(anon_vma)) {
+			rcu_read_unlock();
+			put_anon_vma(anon_vma);
+			rwc->contended = true;
+			return NULL;
+		}
+		rcu_read_unlock();
+	} else {
+		rcu_read_unlock();
+		anon_vma_lock_read(anon_vma);
+	}
+
+	if (unlikely((unsigned long)READ_ONCE(folio->mapping) !=
+		     mapping_value ||
+		     READ_ONCE(mapping->anon_vma) != anon_vma ||
+		     !folio_mapped(folio))) {
+		anon_vma_unlock_read(anon_vma);
+		put_anon_vma(anon_vma);
+		goto retry;
+	}
+
+	if (atomic_dec_and_test(&anon_vma->refcount)) {
+		anon_vma_unlock_read(anon_vma);
+		__put_anon_vma(anon_vma);
+		return NULL;
+	}
+
+	return anon_vma;
+
+out:
+	rcu_read_unlock();
+	return anon_vma;
+}
+
 /*
  * Similar to folio_get_anon_vma() except it locks the anon_vma.
  *
@@ -618,8 +697,10 @@ struct anon_vma *folio_lock_anon_vma_read(const struct folio *folio,
 retry:
 	rcu_read_lock();
 	anon_mapping = (unsigned long)READ_ONCE(folio->mapping);
-	if ((anon_mapping & PAGE_MAPPING_FLAGS) != PAGE_MAPPING_ANON)
-		goto out;
+	if ((anon_mapping & PAGE_MAPPING_FLAGS) != PAGE_MAPPING_ANON) {
+		rcu_read_unlock();
+		return folio_lock_named_swap_anon_vma_read(folio, rwc);
+	}
 	if (!folio_mapped(folio))
 		goto out;
 
@@ -1164,7 +1245,7 @@ static bool page_mkclean_one(struct folio *folio, struct vm_area_struct *vma,
 
 static bool invalid_mkclean_vma(struct vm_area_struct *vma, void *arg)
 {
-	if (vma->vm_flags & VM_SHARED)
+	if ((vma->vm_flags & VM_SHARED) || vma_is_named_swap(vma))
 		return false;
 
 	return true;
@@ -1312,7 +1393,7 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 {
 	struct anon_vma *anon_vma = vma->anon_vma;
 
-	BUG_ON(!anon_vma);
+	BUG_ON(!anon_vma || vma_is_named_swap(vma));
 
 	/*
 	 * If the folio isn't exclusive to this vma, we must use the _oldest_
@@ -2012,11 +2093,13 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			 * See Documentation/mm/mmu_notifier.rst
 			 */
 			dec_mm_counter(mm, mm_counter_file(folio));
+			if (vma_is_named_swap(vma))
+				named_swap_store_pte(mm, vma, address, pvmw.pte);
 		}
 discard:
 		if (unlikely(folio_test_hugetlb(folio)))
 			hugetlb_remove_rmap(folio);
-		else
+		else if (!vma_is_named_swap(vma))
 			folio_remove_rmap_pte(folio, subpage, vma);
 		if (vma->vm_flags & VM_LOCKED)
 			mlock_drain_local();
@@ -2789,7 +2872,7 @@ void rmap_walk(struct folio *folio, struct rmap_walk_control *rwc)
 {
 	if (unlikely(folio_test_ksm(folio)))
 		rmap_walk_ksm(folio, rwc);
-	else if (folio_test_anon(folio))
+	else if (folio_test_anon(folio) || folio_test_named_swap(folio))
 		rmap_walk_anon(folio, rwc, false);
 	else
 		rmap_walk_file(folio, rwc, false);
@@ -2802,7 +2885,7 @@ void rmap_walk_locked(struct folio *folio, struct rmap_walk_control *rwc)
 {
 	/* no ksm support for now */
 	VM_BUG_ON_FOLIO(folio_test_ksm(folio), folio);
-	if (folio_test_anon(folio))
+	if (folio_test_anon(folio) || folio_test_named_swap(folio))
 		rmap_walk_anon(folio, rwc, true);
 	else
 		rmap_walk_file(folio, rwc, true);

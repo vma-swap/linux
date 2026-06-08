@@ -2071,6 +2071,15 @@ static const struct ctl_table vm_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_TWO_HUNDRED,
 	},
+	{
+		.procname	= "named_swap_min_vma_size",
+		.data 	= &named_swap_min_vma_size,
+		.maxlen	= sizeof(named_swap_min_vma_size),
+		.mode	= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1	= SYSCTL_ZERO,
+		.extra2	= SYSCTL_INT_MAX,
+	},
 #ifdef CONFIG_NUMA
 	{
 		.procname	= "numa_stat",

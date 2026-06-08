@@ -219,6 +219,8 @@ void __filemap_remove_folio(struct folio *folio, void *shadow)
 	struct address_space *mapping = folio->mapping;
 
 	trace_mm_filemap_delete_from_page_cache(folio);
+	if (mapping_named_swap(mapping))
+		shadow = named_swap_eviction_shadow(folio, shadow);
 	filemap_unaccount_folio(mapping, folio);
 	page_cache_delete(mapping, folio, shadow);
 }
@@ -991,8 +993,11 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 		 * get overwritten with something else, is a waste of memory.
 		 */
 		WARN_ON_ONCE(folio_test_active(folio));
-		if (!(gfp & __GFP_WRITE) && shadow)
+		if (!(gfp & __GFP_WRITE) && shadow){
+			if (mapping_named_swap(mapping))
+				named_swap_refault_shadow(folio, shadow);
 			workingset_refault(folio, shadow);
+		}
 		folio_add_lru(folio);
 	}
 	return ret;
@@ -3200,7 +3205,7 @@ static int lock_folio_maybe_drop_mmap(struct vm_fault *vmf, struct folio *folio,
  */
 static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 {
-	struct file *file = vmf->vma->vm_file;
+	struct file *file = vmf->vm_file;
 	struct file_ra_state *ra = &file->f_ra;
 	struct address_space *mapping = file->f_mapping;
 	DEFINE_READAHEAD(ractl, file, ra, mapping, vmf->pgoff);
@@ -3270,7 +3275,7 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 static struct file *do_async_mmap_readahead(struct vm_fault *vmf,
 					    struct folio *folio)
 {
-	struct file *file = vmf->vma->vm_file;
+	struct file *file = vmf->vm_file;
 	struct file_ra_state *ra = &file->f_ra;
 	DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, vmf->pgoff);
 	struct file *fpin = NULL;
@@ -3360,7 +3365,7 @@ static vm_fault_t filemap_fault_recheck_pte_none(struct vm_fault *vmf)
 vm_fault_t filemap_fault(struct vm_fault *vmf)
 {
 	int error;
-	struct file *file = vmf->vma->vm_file;
+	struct file *file = vmf->vm_file;
 	struct file *fpin = NULL;
 	struct address_space *mapping = file->f_mapping;
 	struct inode *inode = mapping->host;
@@ -3761,12 +3766,12 @@ EXPORT_SYMBOL(filemap_map_pages);
 
 vm_fault_t filemap_page_mkwrite(struct vm_fault *vmf)
 {
-	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	struct address_space *mapping = vmf->vm_file->f_mapping;
 	struct folio *folio = page_folio(vmf->page);
 	vm_fault_t ret = VM_FAULT_LOCKED;
 
 	sb_start_pagefault(mapping->host->i_sb);
-	file_update_time(vmf->vma->vm_file);
+	file_update_time(vmf->vm_file);
 	folio_lock(folio);
 	if (folio->mapping != mapping) {
 		folio_unlock(folio);

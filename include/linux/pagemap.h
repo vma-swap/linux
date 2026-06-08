@@ -210,6 +210,7 @@ enum mapping_flags {
 	AS_STABLE_WRITES = 7,	/* must wait for writeback before modifying
 				   folio contents */
 	AS_INACCESSIBLE = 8,	/* Do not attempt direct R/W access to the mapping */
+	AS_NAMED_SWAP = 9,	/* This mapping is named swap*/
 	/* Bits 16-25 are used for FOLIO_ORDER */
 	AS_FOLIO_ORDER_BITS = 5,
 	AS_FOLIO_ORDER_MIN = 16,
@@ -333,6 +334,37 @@ static inline void mapping_set_inaccessible(struct address_space *mapping)
 static inline bool mapping_inaccessible(struct address_space *mapping)
 {
 	return test_bit(AS_INACCESSIBLE, &mapping->flags);
+}
+
+static inline void mapping_set_named_swap(struct address_space *mapping)
+{
+	set_bit(AS_NAMED_SWAP, &mapping->flags);
+}
+
+static inline bool mapping_named_swap(struct address_space *mapping)
+{
+	return test_bit(AS_NAMED_SWAP, &mapping->flags);
+}
+
+static inline bool vma_is_named_swap(struct vm_area_struct *vma)
+{
+	if (!vma || !vma->vm_file)
+		return false;
+	return mapping_named_swap(vma->vm_file->f_mapping);
+}
+
+static inline bool folio_test_named_swap(const struct folio *folio)
+{
+	return mapping_named_swap(folio->mapping);
+}
+
+int named_swap_mapcount(struct address_space *mapping, pgoff_t index);
+
+static inline int named_swap_folio_mapcount(const struct folio *folio)
+{
+	if (!folio || !folio_test_named_swap(folio))
+		return 0;
+	return named_swap_mapcount(folio->mapping, folio->index);
 }
 
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
