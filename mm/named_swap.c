@@ -285,11 +285,33 @@ static void named_swap_xa_remove(u64 index)
 	struct file *file;
 
 	mutex_lock(&named_swap_xa_lock);
-	file = xa_erase(&named_swap_files, index);
+	file = xa_erase(&named_swap_files, index)
 	mutex_unlock(&named_swap_xa_lock);
 	if (file)
 		fput(file);
 }
+static int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta)
+{
+	struct anon_vma *anon_vma = vma->anon_vma;
+	if(!anon_vma)
+		return -EINVAL;
+	struct file *file = anon_vma->named_swap_file;
+	if(!file)
+		return -EINVAL;
+	struct inode *node=file_inode(file);
+	if(!node)
+	{
+		return -EINVAL;
+	}
+	loff_t old_size=i_size_read(node);
+	int ret = vfs_fallocate(file,0,old_size,delta);
+	if (ret)
+		return ret;
+	return 0;
+
+
+}
+
 
 static void named_swap_xa_destroy(void)
 {
