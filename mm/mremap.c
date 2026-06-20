@@ -1202,6 +1202,10 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 				goto out;
 			}
 
+			if(vma_is_named_swap(vma)){
+				named_swap_file_enlarge(vma, delta);
+			}
+
 			vm_stat_account(mm, vma->vm_flags, pages);
 			if (vma->vm_flags & VM_LOCKED) {
 				mm->locked_vm += pages;
