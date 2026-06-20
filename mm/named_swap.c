@@ -292,24 +292,30 @@ static void named_swap_xa_remove(u64 index)
 }
 static int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
-	struct anon_vma *anon_vma = vma->anon_vma;
-	if(!anon_vma)
-		return -EINVAL;
-	struct file *file = anon_vma->named_swap_file;
-	if(!file)
-		return -EINVAL;
-	struct inode *node=file_inode(file);
-	if(!node)
-	{
-		return -EINVAL;
-	}
-	loff_t old_size=i_size_read(node);
-	int ret = vfs_fallocate(file,0,old_size,delta);
-	if (ret)
-		return ret;
-	return 0;
+	struct anon_vma *anon_vma;
+    struct file *file;
+    struct inode *inode;
+    loff_t old_size;
 
+    if (!vma)
+        return -EINVAL;
 
+    anon_vma = vma->anon_vma;
+    if (!anon_vma)
+        return -EINVAL;
+
+    file = anon_vma->named_swap_file;
+    if (!file)
+        return -EINVAL;
+
+    inode = file_inode(file);
+    old_size = i_size_read(inode);
+
+    /* Prevent overflow: check if old_size + delta exceeds limits */
+    if (delta < 0)
+        return -EINVAL;
+
+    return vfs_fallocate(file, 0, old_size, delta);
 }
 
 
