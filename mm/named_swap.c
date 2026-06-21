@@ -285,7 +285,7 @@ static void named_swap_xa_remove(u64 index)
 	struct file *file;
 
 	mutex_lock(&named_swap_xa_lock);
-	file = xa_erase(&named_swap_files, index)
+	file = xa_erase(&named_swap_files, index);
 	mutex_unlock(&named_swap_xa_lock);
 	if (file)
 		fput(file);
