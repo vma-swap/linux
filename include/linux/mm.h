@@ -939,6 +939,7 @@ char *named_swap_file_path(struct file *file, char *buf, int buflen);
 void named_swap_link(struct vm_area_struct *vma);
 void named_swap_unlink(struct anon_vma *anon_vma);
 void setup_named_swap_vmf(struct vm_fault *vmf);
+int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta);
 void named_swap_store_pte(struct mm_struct *mm, struct vm_area_struct *vma,
 			  unsigned long address, pte_t *pte);
 void named_swap_unmap_present(struct folio *folio, struct page *page,

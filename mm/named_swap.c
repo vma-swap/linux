@@ -290,7 +290,7 @@ static void named_swap_xa_remove(u64 index)
 	if (file)
 		fput(file);
 }
-static int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta)
+int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
 	struct anon_vma *anon_vma;
     struct file *file;
