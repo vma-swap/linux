@@ -301,6 +301,7 @@ int named_swap_file_size(struct vm_area_struct *vma){
 
 	return vma->vm_end - vma->vm_start;
 }
+EXPORT_SYMBOL(named_swap_file_size);
 
 int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
