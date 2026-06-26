@@ -290,11 +290,22 @@ static void named_swap_xa_remove(u64 index)
 	if (file)
 		fput(file);
 }
-int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta) //better name - named_swap_enlarge - dont go into files and inodes abstraction
+
+int named_swap_file_size(struct vm_area_struct *vma){
+	
+	if (!vma)
+		return -EINVAL;
+
+	if (!vma_is_named_swap(vma))
+		return -EINVAL;
+
+	return vma->vm_end - vma->vm_start;
+}
+
+int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
 	struct anon_vma *anon_vma;
     struct file *file;
-    struct inode *inode;
     loff_t old_size;
 
     if (!vma)
@@ -308,13 +319,9 @@ int named_swap_file_enlarge(struct vm_area_struct *vma, unsigned long delta) //b
     if (!file)
         return -EINVAL;
 
-    inode = file_inode(file);
-    old_size = i_size_read(inode); //dont need - get the size from vma. plus - may add asserts(bug-on)
-	//better - do named_swap_file_size - use vma size - and on this assert
-
-    /* Prevent overflow: check if old_size + delta exceeds limits */
-    if (delta < 0)
-        return -EINVAL;
+    old_size = named_swap_file_size(vma); 
+	
+	VM_BUG_ON_VMA(old_size + delta < old_size, vma); //(condition,vma).
 
     return vfs_fallocate(file, 0, old_size, delta);
 }
@@ -611,7 +618,7 @@ static long named_swap_fallocate(struct file *file, int mode, loff_t offset, lof
 		printk(KERN_ERR "named_swap_fallocate: vfs_fallocate failed: file=%px mode=%d offset=%llu len=%llu ret=%ld\n", file, mode, offset, len, ret);
 	}
 	printk(KERN_INFO "named_swap_fallocate: file=%px mode=%d offset=%llu len=%llu ret=%ld\n", file, mode, offset, len, ret);
-	file->inode->i_size = named_swap_lower(file)->f_inode->i_size; //thats the idea generally. update size of wrapper file to match lower file
+	file->inode->i_size = named_swap_lower(file)->f_inode->i_size; // update size of wrapper file to match lower file
 	return ret;
 }
 
