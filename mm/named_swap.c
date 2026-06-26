@@ -619,7 +619,7 @@ static long named_swap_fallocate(struct file *file, int mode, loff_t offset, lof
 		printk(KERN_ERR "named_swap_fallocate: vfs_fallocate failed: file=%px mode=%d offset=%llu len=%llu ret=%ld\n", file, mode, offset, len, ret);
 	}
 	printk(KERN_INFO "named_swap_fallocate: file=%px mode=%d offset=%llu len=%llu ret=%ld\n", file, mode, offset, len, ret);
-	file->inode->i_size = named_swap_lower(file)->f_inode->i_size; // update size of wrapper file to match lower file
+	file->f_inode->i_size = named_swap_lower(file)->f_inode->i_size; // update size of wrapper file to match lower file
 	return ret;
 }
 
