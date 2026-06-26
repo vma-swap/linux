@@ -20,7 +20,7 @@ QEMU_CMD="qemu-system-x86_64 \
         -smp 1 \
         -kernel ./arch/x86/boot/bzImage \
         -append \"console=ttyS0 root=/dev/sda earlyprintk=serial net.ifnames=0 nokaslr debug\" \
-        -drive file=./vm_image/trixie.img,format=raw \
+        -drive file=../vm_image/trixie.img,format=raw \
         -fsdev local,id=fsdev0,path=/usr/src/tests,security_model=none \
         -device virtio-9p-pci,fsdev=fsdev0,mount_tag=tests \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:10021-:22 \
