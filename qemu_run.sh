@@ -32,7 +32,7 @@ QEMU_CMD="qemu-system-x86_64 \
 # Add debugging options if -g is passed
 if [ $DEBUG_MODE -eq 1 ]; then
   echo "Debug mode enabled"
-  QEMU_CMD="$QEMU_CMD  -s -S"
+  QEMU_CMD="$QEMU_CMD  -s"
 fi
 
 # Run the QEMU command and log output
