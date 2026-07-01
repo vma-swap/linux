@@ -291,15 +291,14 @@ static void named_swap_xa_remove(u64 index)
 		fput(file);
 }
 
-int named_swap_file_size(struct vm_area_struct *vma){
-	
-	if (!vma)
+int named_swap_file_size(struct file *file){
+	if(!file)
 		return -EINVAL;
-
-	if (!vma_is_named_swap(vma))
+	struct file* lower = named_swap_lower(file);
+	if(!lower)
 		return -EINVAL;
+	return i_size_read(file_inode(lower));
 
-	return vma->vm_end - vma->vm_start;
 }
 EXPORT_SYMBOL(named_swap_file_size);
 
@@ -320,7 +319,7 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
     if (!file)
         return -EINVAL;
 
-    old_size = named_swap_file_size(vma); 
+    old_size = named_swap_file_size(file); 
 	
 	VM_BUG_ON_VMA(old_size + delta < old_size, vma); //(condition,vma).
 
