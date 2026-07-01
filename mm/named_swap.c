@@ -291,7 +291,7 @@ static void named_swap_xa_remove(u64 index)
 		fput(file);
 }
 
-int named_swap_file_size(struct file *file){
+loff_t named_swap_file_size(struct file *file){
 	if(!file)
 		return -EINVAL;
 	struct file* lower = named_swap_lower(file);
