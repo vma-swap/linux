@@ -292,12 +292,18 @@ static void named_swap_xa_remove(u64 index)
 }
 
 loff_t named_swap_file_size(struct file *file){
-	if(!file)
-		return -EINVAL;
-	struct file* lower = named_swap_lower(file);
-	if(!lower)
-		return -EINVAL;
-	return i_size_read(file_inode(lower));
+	struct file *lower;
+
+    if (!file)
+        return -EINVAL;
+
+    lower = named_swap_lower(file);
+    if (!lower)
+        return -EINVAL;
+
+    // Use file_inode() to safely get the inode, 
+    // and return it as a 64-bit loff_t
+    return i_size_read(file_inode(lower));
 
 }
 EXPORT_SYMBOL(named_swap_file_size);
