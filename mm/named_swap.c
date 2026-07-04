@@ -326,8 +326,6 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
         return -EINVAL;
 
     old_size = named_swap_file_size(file); 
-	
-	VM_BUG_ON_VMA(old_size + delta < old_size, vma); //(condition,vma).
 
     return vfs_fallocate(file, 0, old_size, delta);
 }
