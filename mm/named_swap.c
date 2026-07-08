@@ -330,6 +330,49 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
     return vfs_fallocate(file, 0, old_size, delta);
 }
 
+int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
+{
+	struct anon_vma *anon_vma;
+	struct file *file;
+	struct file *lower;
+	loff_t old_size;
+	loff_t new_size;
+	long ret;
+
+	if (!vma)
+		return -EINVAL;
+
+	anon_vma = vma->anon_vma;
+	if (!anon_vma)
+		return -EINVAL;
+
+	file = anon_vma->named_swap_file;
+	if (!file)
+		return -EINVAL;
+
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
+
+	old_size = named_swap_file_size(file);
+	if (old_size < 0)
+		return old_size;
+
+	if ((loff_t)delta > old_size)
+		return -EINVAL;
+
+	new_size = old_size - (loff_t)delta;
+
+	ret = vfs_truncate(&file->f_path, new_size);
+	if (ret)
+		ret = vfs_truncate(&lower->f_path, new_size);
+	if (ret)
+		return ret;
+
+	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
+	return 0;
+}
+
 
 static void named_swap_xa_destroy(void)
 {

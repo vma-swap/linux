@@ -1210,6 +1210,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			vma = vma_merge_extend(&vmi, vma, delta);
 			if (!vma) {
 				vm_unacct_memory(charged);
+				named_swap_shrink(vma, delta);
 				ret = -ENOMEM;
 				goto out;
 			}
