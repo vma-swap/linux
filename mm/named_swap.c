@@ -363,11 +363,10 @@ int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
 
 	new_size = old_size - (loff_t)delta;
 
-	ret = vfs_truncate(&file->f_path, new_size);
-	if (ret)
-		ret = vfs_truncate(&lower->f_path, new_size);
-	if (ret)
-		return ret;
+	//ret = vfs_truncate(&file->f_path, new_size);
+	//if (ret)
+	ret = vfs_truncate(&lower->f_path, new_size);
+	if (ret) return ret;
 
 	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
 	return 0;

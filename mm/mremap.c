@@ -1048,6 +1048,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
+	struct vm_area_struct *merged_vma;
 	unsigned long ret = -EINVAL;
 	bool locked = false;
 	struct vm_userfaultfd_ctx uf = NULL_VM_UFFD_CTX;
@@ -1207,13 +1208,16 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			 * adjacent to the expanded vma and otherwise
 			 * compatible.
 			 */
-			vma = vma_merge_extend(&vmi, vma, delta);
-			if (!vma) {
+			merged_vma = vma_merge_extend(&vmi, vma, delta);
+			if (!merged_vma) {
 				vm_unacct_memory(charged);
-				named_swap_shrink(vma, delta);
+				if (vma_is_named_swap(vma)) {
+					named_swap_shrink(vma, delta); /* Correctly passes the original vma */
+				}
 				ret = -ENOMEM;
 				goto out;
 			}
+			vma = merged_vma; /* Safe to reassign upon success */
 
 			vm_stat_account(mm, vma->vm_flags, pages);
 			if (vma->vm_flags & VM_LOCKED) {
