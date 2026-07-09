@@ -1616,6 +1616,7 @@ struct vm_area_struct *vma_merge_extend(struct vma_iterator *vmi,
 
 	return vma_merge_new_range(&vmg);
 }
+ALLOW_ERROR_INJECTION(vma_merge_extend, NULL);
 
 void unlink_file_vma_batch_init(struct unlink_vma_file_batch *vb)
 {
