@@ -372,6 +372,34 @@ int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
 	return 0;
 }
 
+int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
+			  unsigned long end)
+{
+	struct file *file;
+	struct file *lower;
+	loff_t offset;
+	loff_t len;
+
+	if (!vma || start >= end)
+		return -EINVAL;
+
+	file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
+
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
+
+	offset = ((loff_t)start - vma->vm_start) +
+		 ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+	len = (loff_t)(end - start);
+
+	return vfs_fallocate(lower,
+			     FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+			     offset, len);
+}
+
 
 static void named_swap_xa_destroy(void)
 {
