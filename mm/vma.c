@@ -6,6 +6,8 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <linux/mm.h>        
+#include <linux/pagemap.h>
 
 struct mmap_state {
 	struct mm_struct *mm;
@@ -1202,6 +1204,13 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 	/* Remove and clean up vmas */
 	mas_set(mas_detach, 0);
 	mas_for_each(mas_detach, vma, ULONG_MAX)
+		/* Deallocate the named_swap file right before the vma removal */
+		if (vma_is_named_swap(vma)) {
+			int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
+			if (err) {
+				pr_warn_ratelimited("named_swap: failed to punch hole (err=%d). Disk space may be leaked.\n", err);
+			}
+		}
 		remove_vma(vma, /* unreachable = */ false);
 
 	vm_unacct_memory(vms->nr_accounted);

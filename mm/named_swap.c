@@ -291,6 +291,21 @@ static void named_swap_xa_remove(u64 index)
 		fput(file);
 }
 
+loff_t named_swap_file_blocks(struct file *file) {
+    struct file *lower;
+
+    if (!file)
+        return -EINVAL;
+
+    lower = named_swap_lower(file);
+    if (!lower)
+        return -EINVAL;
+
+    /* Return the number of 512-byte blocks allocated to the lower inode */
+    return file_inode(lower)->i_blocks;
+}
+EXPORT_SYMBOL(named_swap_file_blocks);
+
 loff_t named_swap_file_size(struct file *file){
 	struct file *lower;
 
