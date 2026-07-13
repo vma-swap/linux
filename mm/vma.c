@@ -1203,7 +1203,7 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 
 	/* Remove and clean up vmas */
 	mas_set(mas_detach, 0);
-	mas_for_each(mas_detach, vma, ULONG_MAX)
+	mas_for_each(mas_detach, vma, ULONG_MAX) {
 		/* Deallocate the named_swap file right before the vma removal */
 		if (vma_is_named_swap(vma)) {
 			int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
@@ -1212,7 +1212,7 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 			}
 		}
 		remove_vma(vma, /* unreachable = */ false);
-
+	}
 	vm_unacct_memory(vms->nr_accounted);
 	validate_mm(mm);
 	if (vms->unlock)
