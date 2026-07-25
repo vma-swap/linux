@@ -2946,10 +2946,42 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				if (vma->vm_flags & VM_LOCKED)
 					mm->locked_vm += grow;
 				vm_stat_account(mm, vma->vm_flags, grow);
-				anon_vma_interval_tree_pre_update_vma(vma);
+				anon_vma_interval_tree_pre_update_vma(vma); /*detach*/
 				vma->vm_start = address;
 				vma->vm_pgoff -= grow;
 				/* Overwrite old entry in mtree. */
+				vma_iter_store(&vmi, vma);
+				anon_vma_interval_tree_post_update_vma(vma); /*re-attach*/
+
+				perf_event_mmap(vma);
+			}
+		}
+		/*If its named swap, we would like to support grow > vm_pgoff*/
+		else if (vma_is_named_swap(vma)){
+			error = acct_stack_growth(vma, size, grow);
+			if (!error) {
+				if (vma->vm_flags & VM_LOCKED)
+					mm->locked_vm += grow;
+				vm_stat_account(mm, vma->vm_flags, grow);
+
+				/* Looping through other vmas relating to the same file and updating their vm_pgoff */
+				struct anon_vma_chain *avc;
+				list_for_each_entry(avc, &vma->anon_vma->root->head, same_anon_vma) {
+                        struct vm_area_struct *sibling = avc->vma;
+                        
+                        if (sibling == vma)
+                            continue; /* We handle the expanding VMA below */
+
+                        /* Safely detach, update vm_pgoff, and re-attach */
+                        anon_vma_interval_tree_pre_update_vma(sibling);
+                        sibling->vm_pgoff += grow;
+                        anon_vma_interval_tree_post_update_vma(sibling);
+                    }
+
+				/* Handle the original expanding VMA */
+				anon_vma_interval_tree_pre_update_vma(vma);
+				vma->vm_start = address;
+				/* Note that here we didnt decrease vm_pgoff */
 				vma_iter_store(&vmi, vma);
 				anon_vma_interval_tree_post_update_vma(vma);
 
