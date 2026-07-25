@@ -2964,19 +2964,19 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 					mm->locked_vm += grow;
 				vm_stat_account(mm, vma->vm_flags, grow);
 
-				/* Looping through other vmas relating to the same file and updating their vm_pgoff */
+				/* Looping through all other vmas relating to the same file and updating their vm_pgoff */
 				struct anon_vma_chain *avc;
-				list_for_each_entry(avc, &vma->anon_vma->root->head, same_anon_vma) {
-                        struct vm_area_struct *sibling = avc->vma;
-                        
-                        if (sibling == vma)
-                            continue; /* We handle the expanding VMA below */
+				anon_vma_interval_tree_foreach(avc, &vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
+					struct vm_area_struct *sibling = avc->vma;
+					
+					if (sibling == vma)
+						continue; /* We handle the expanding VMA outside the loop */
 
-                        /* Safely detach, update vm_pgoff, and re-attach */
-                        anon_vma_interval_tree_pre_update_vma(sibling);
-                        sibling->vm_pgoff += grow;
-                        anon_vma_interval_tree_post_update_vma(sibling);
-                    }
+					/* Safely detach, update offset, and re-attach */
+					anon_vma_interval_tree_pre_update_vma(sibling);
+					sibling->vm_pgoff += grow;
+					anon_vma_interval_tree_post_update_vma(sibling);
+				}
 
 				/* Handle the original expanding VMA */
 				anon_vma_interval_tree_pre_update_vma(vma);
