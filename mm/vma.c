@@ -2960,32 +2960,37 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 		else if (vma_is_named_swap(vma)){
 			error = acct_stack_growth(vma, size, grow);
 			if (!error) {
-				if (vma->vm_flags & VM_LOCKED)
-					mm->locked_vm += grow;
-				vm_stat_account(mm, vma->vm_flags, grow);
+				/* Physically insert the new blocks at the start of the file */
+                error = named_swap_enlarge_left(vma, grow << PAGE_SHIFT);
+				if (!error) {
+					if (vma->vm_flags & VM_LOCKED)
+						mm->locked_vm += grow;
+					vm_stat_account(mm, vma->vm_flags, grow);
 
-				/* Looping through all other vmas relating to the same file and updating their vm_pgoff */
-				struct anon_vma_chain *avc;
-				anon_vma_interval_tree_foreach(avc, &vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
-					struct vm_area_struct *sibling = avc->vma;
-					
-					if (sibling == vma)
-						continue; /* We handle the expanding VMA outside the loop */
+					/* Looping through all other vmas relating to the same file and updating their vm_pgoff */
+					struct anon_vma_chain *avc;
+					anon_vma_interval_tree_foreach(avc, &vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
+						struct vm_area_struct *sibling = avc->vma;
+						
+						if (sibling == vma)
+							continue; /* We handle the expanding VMA outside the loop */
 
-					/* Safely detach, update offset, and re-attach */
-					anon_vma_interval_tree_pre_update_vma(sibling);
-					sibling->vm_pgoff += grow;
-					anon_vma_interval_tree_post_update_vma(sibling);
+						/* Safely detach, update offset, and re-attach */
+						anon_vma_interval_tree_pre_update_vma(sibling);
+						sibling->vm_pgoff += grow;
+						anon_vma_interval_tree_post_update_vma(sibling);
+					}
+
+					/* Handle the original expanding VMA */
+					anon_vma_interval_tree_pre_update_vma(vma);
+					vma->vm_start = address;
+					/* Note that here we didnt decrease vm_pgoff */
+					vma_iter_store(&vmi, vma);
+					anon_vma_interval_tree_post_update_vma(vma);
+
+					perf_event_mmap(vma);
 				}
 
-				/* Handle the original expanding VMA */
-				anon_vma_interval_tree_pre_update_vma(vma);
-				vma->vm_start = address;
-				/* Note that here we didnt decrease vm_pgoff */
-				vma_iter_store(&vmi, vma);
-				anon_vma_interval_tree_post_update_vma(vma);
-
-				perf_event_mmap(vma);
 			}
 		}
 	}
