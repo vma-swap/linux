@@ -60,9 +60,11 @@ static inline int current_is_kswapd(void)
  * should be a none pte.  As its name "PTE" hints, it should only be
  * applied to the leaves of pgtables.
  */
+#define SWP_NAMED_SWAP_NUM 1
 #define SWP_PTE_MARKER_NUM 1
 #define SWP_PTE_MARKER     (MAX_SWAPFILES + SWP_HWPOISON_NUM + \
 			    SWP_MIGRATION_NUM + SWP_DEVICE_NUM)
+#define SWP_NAMED_SWAP     (SWP_PTE_MARKER + SWP_PTE_MARKER_NUM)
 
 /*
  * Unaddressable device memory support. See include/linux/hmm.h and
@@ -117,7 +119,7 @@ static inline int current_is_kswapd(void)
 #define MAX_SWAPFILES \
 	((1 << MAX_SWAPFILES_SHIFT) - SWP_DEVICE_NUM - \
 	SWP_MIGRATION_NUM - SWP_HWPOISON_NUM - \
-	SWP_PTE_MARKER_NUM)
+	SWP_PTE_MARKER_NUM - SWP_NAMED_SWAP_NUM)
 
 /*
  * Magic header for a swap area. The first part of the union is
