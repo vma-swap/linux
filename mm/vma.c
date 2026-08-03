@@ -1204,11 +1204,31 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 	/* Remove and clean up vmas */
 	mas_set(mas_detach, 0);
 	mas_for_each(mas_detach, vma, ULONG_MAX) {
-		/* Deallocate the named_swap file right before the vma removal */
-		if (vma_is_named_swap(vma)) {
-			int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
-			if (err) {
-				pr_warn_ratelimited("named_swap: failed to punch hole (err=%d). Disk space may be leaked.\n", err);
+		/* Deallocate or shrink the named_swap file right before the vma removal */
+		if (vma_is_named_swap(vma) && vma->anon_vma && vma->anon_vma->named_swap_file) {
+			struct file *swap_file = vma->anon_vma->named_swap_file;
+			
+			/* 1. Calculate the byte offset where this detached VMA ends in the file */
+			loff_t vma_end_offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + 
+			                        (vma->vm_end - vma->vm_start);
+			
+			/* 2. Retrieve the total size of the backing file */
+			loff_t file_size = named_swap_file_size(swap_file);
+			unsigned long delta = vma->vm_end - vma->vm_start;
+
+			/* 3. Differentiate: Tail-end vs Middle/Left */
+			if (vma_end_offset == file_size) {
+				/* We are unmapping the exact right edge of the file. Shrink it. */
+				int err = named_swap_shrink(vma, delta);
+				if (err) {
+					pr_warn_ratelimited("named_swap: failed to shrink (err=%d).\n", err);
+				}
+			} else {
+				/* We are unmapping from the middle or left. Punch a hole. */
+				int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
+				if (err) {
+					pr_warn_ratelimited("named_swap: failed to punch hole (err=%d). Disk space may be leaked.\n", err);
+				}
 			}
 		}
 		remove_vma(vma, /* unreachable = */ false);
