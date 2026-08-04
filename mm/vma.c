@@ -1206,7 +1206,8 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 	mas_for_each(mas_detach, vma, ULONG_MAX) {
 		/* Deallocate or shrink the named_swap file right before the vma removal */
 		if (vma_is_named_swap(vma)) {
-			struct file *swap_file = vma->anon_vma->named_swap_file;
+			/* Using VM_FILE DIRECTLY. anon_vma IS DEAD HERE. */
+			struct file *swap_file = vma->vm_file;
 			
 			/* 1. Calculate the byte offset where this detached VMA ends in the file */
 			loff_t vma_end_offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + 
