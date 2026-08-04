@@ -2630,10 +2630,22 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		/* vmi is positioned at prev, which this mode expects. */
 		vmg.merge_flags = VMG_FLAG_JUST_EXPAND;
 
+		/* Set vmg.file so can_merge_left doesn't fail down the road*/
+		if (vma_is_named_swap(vma)) {
+			vmg.file = vma->vm_file; 
+			vmg.flags |= MAP_NAMED_SWAP; 
+            
+			if (named_swap_enlarge(vma, len))
+				goto unacct_fail;
+		}
+
 		if (vma_merge_new_range(&vmg))
 			goto out;
-		else if (vmg_nomem(&vmg))
+		else if (vmg_nomem(&vmg)) {
+			if (vma_is_named_swap(vma))
+				named_swap_shrink(vma, len);
 			goto unacct_fail;
+		}
 	}
 
 	if (vma)
