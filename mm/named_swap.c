@@ -357,11 +357,7 @@ int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
 	if (!vma)
 		return -EINVAL;
 
-	anon_vma = vma->anon_vma;
-	if (!anon_vma)
-		return -EINVAL;
-
-	file = anon_vma->named_swap_file;
+	file = vma->vm_file;
 	if (!file)
 		return -EINVAL;
 
