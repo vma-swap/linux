@@ -347,7 +347,6 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 
 int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
 {
-	struct anon_vma *anon_vma;
 	struct file *file;
 	struct file *lower;
 	loff_t old_size;
