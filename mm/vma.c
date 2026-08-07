@@ -973,8 +973,8 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 {
 	struct vm_area_struct *prev = vmg->prev;
 	struct vm_area_struct *next = vmg->next;
-	unsigned long end = vmg->end; /* Original gap end */
-	unsigned long start = vmg->start; /* Original gap start */
+	unsigned long orig_end = vmg->end; /* Original gap end */
+	unsigned long orig_start = vmg->start; /* Original gap start */
 	unsigned long end = vmg->end;
 	bool can_merge_left, can_merge_right;
 	bool just_expand = vmg->merge_flags & VMG_FLAG_JUST_EXPAND;
@@ -1051,7 +1051,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
                 if (can_merge_left) 
                     named_swap_shrink(vmg->vma, gap_len);
                 else if (can_merge_right)
-                    named_swap_deallocate(vmg->vma, start, end);
+                    named_swap_deallocate(vmg->vma, orig_start, orig_end);
             }
         }
     }
