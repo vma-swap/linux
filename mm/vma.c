@@ -973,9 +973,14 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 {
 	struct vm_area_struct *prev = vmg->prev;
 	struct vm_area_struct *next = vmg->next;
+	unsigned long end = vmg->end; /* Original gap end */
+	unsigned long start = vmg->start; /* Original gap start */
 	unsigned long end = vmg->end;
 	bool can_merge_left, can_merge_right;
 	bool just_expand = vmg->merge_flags & VMG_FLAG_JUST_EXPAND;
+
+	/* 1. Capture the exact size of the incoming gap being absorbed */
+    unsigned long gap_len = vmg->end - vmg->start;
 
 	mmap_assert_write_locked(vmg->mm);
 	VM_WARN_ON_VMG(vmg->vma, vmg);
@@ -1018,15 +1023,38 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 		}
 	}
 
-	/*
-	 * Now try to expand adjacent VMA(s). This takes care of removing the
-	 * following VMA if we have VMAs on both sides.
-	 */
-	if (vmg->vma && !vma_expand(vmg)) {
-		khugepaged_enter_vma(vmg->vma, vmg->flags);
-		vmg->state = VMA_MERGE_SUCCESS;
-		return vmg->vma;
-	}
+	/* 2. GRANULAR INTERCEPT: We now know which VMA we are merging into (vmg->vma) */
+    if (vmg->vma) {
+        bool is_named_swap = vma_is_named_swap(vmg->vma);
+        
+        /* Enlarge the file BEFORE we attempt to expand the VMA */
+        if (is_named_swap) {
+            if (can_merge_left) {
+                // Expanding rightwards into the gap
+                if (named_swap_enlarge(vmg->vma, gap_len))
+                    return NULL; // Abort merge; fallback to allocating a new isolated VMA
+            } else if (can_merge_right) {
+                // Expanding leftwards into the gap
+                if (named_swap_enlarge_left(vmg->vma, start, end))
+                    return NULL; 
+            }
+        }
+
+        /* 3. Execute the actual VMA merge */
+        if (!vma_expand(vmg)) {
+            khugepaged_enter_vma(vmg->vma, vmg->flags);
+            vmg->state = VMA_MERGE_SUCCESS;
+            return vmg->vma;
+        } else {
+            /* 4. ROLLBACK: If VMA expansion fails, undo the file expansion */
+            if (is_named_swap) {
+                if (can_merge_left) 
+                    named_swap_shrink(vmg->vma, gap_len);
+                else if (can_merge_right)
+                    named_swap_shrink_left(vmg->vma, gap_len); // You will need to implement this counterpart
+            }
+        }
+    }
 
 	return NULL;
 }
@@ -2629,15 +2657,6 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		vmg.prev = vma;
 		/* vmi is positioned at prev, which this mode expects. */
 		vmg.merge_flags = VMG_FLAG_JUST_EXPAND;
-
-		/* Set vmg.file so can_merge_left doesn't fail down the road*/
-		if (vma_is_named_swap(vma)) {
-			vmg.file = vma->vm_file; 
-			vmg.flags |= MAP_NAMED_SWAP; 
-            
-			if (named_swap_enlarge(vma, len))
-				goto unacct_fail;
-		}
 
 		if (vma_merge_new_range(&vmg))
 			goto out;

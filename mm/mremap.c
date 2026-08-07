@@ -1188,18 +1188,6 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			}
 
 			/*
-			* before vma_merge_extend() - try to enlarge the file
-			*/
-			if(vma_is_named_swap(vma)){
-				ret = named_swap_enlarge(vma, delta);
-				if (ret){
-					/* expansion failed - uncharge memory and return ret */
-					vm_unacct_memory(charged);
-					goto out;
-				} 
-			}
-
-			/*
 			 * Function vma_merge_extend() is called on the
 			 * extension we are adding to the already existing vma,
 			 * vma_merge_extend() will merge this extension with the
@@ -1208,16 +1196,12 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			 * adjacent to the expanded vma and otherwise
 			 * compatible.
 			 */
-			merged_vma = vma_merge_extend(&vmi, vma, delta);
-			if (!merged_vma) {
+			vma = vma_merge_extend(&vmi, vma, delta);
+			if (!vma) {
 				vm_unacct_memory(charged);
-				if (vma_is_named_swap(vma)) {
-					named_swap_shrink(vma, delta); /* Correctly passes the original vma */
-				}
 				ret = -ENOMEM;
 				goto out;
 			}
-			vma = merged_vma; /* Safe to reassign upon success */
 
 			vm_stat_account(mm, vma->vm_flags, pages);
 			if (vma->vm_flags & VM_LOCKED) {
