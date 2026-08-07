@@ -1035,7 +1035,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
                     return NULL; // Abort merge; fallback to allocating a new isolated VMA
             } else if (can_merge_right) {
                 // Expanding leftwards into the gap
-                if (named_swap_enlarge_left(vmg->vma, start, end))
+                if (named_swap_enlarge_left(vmg->vma, gap_len))
                     return NULL; 
             }
         }
@@ -1051,7 +1051,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
                 if (can_merge_left) 
                     named_swap_shrink(vmg->vma, gap_len);
                 else if (can_merge_right)
-                    named_swap_shrink_left(vmg->vma, gap_len); // You will need to implement this counterpart
+                    named_swap_deallocate(vmg->vma, start, end);
             }
         }
     }
