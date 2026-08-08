@@ -115,6 +115,33 @@ enum named_swap_ra_reason {
 	{ 20 /* WAIT_WRITEBACK */,		"wait_writeback" },	\
 	{ 21 /* DEMOTE */,			"demote" }
 
+/*
+ * Packed args for named_swap_balance_dirty (TRACE_EVENT BPF limit is 12).
+ * Rates are pages/s; *_kbps printed in the event via PAGE_SHIFT convert.
+ */
+struct named_swap_dirty_trace {
+	unsigned long thresh;
+	unsigned long bg_thresh;
+	unsigned long dirty;
+	unsigned long wb_thresh;
+	unsigned long wb_dirty;
+	unsigned long dirty_ratelimit;
+	unsigned long task_ratelimit;
+	unsigned long dirtied;
+	long pause_ms;
+	unsigned int flags;
+	unsigned long write_bw;
+	unsigned long avg_write_bw;
+	unsigned long dirty_rate;
+	unsigned long pos_ratio;
+	unsigned long setpoint;
+	unsigned long freerun_ceil;
+	unsigned long balanced_dirty_ratelimit;
+	long period_ms;
+	long min_pause_ms;
+	long max_pause_ms;
+};
+
 #endif /* _TRACE_NAMED_SWAP_DEFS */
 
 TRACE_EVENT(named_swap_file_create,
@@ -677,14 +704,9 @@ TRACE_EVENT(named_swap_folio_uptodate,
 
 TRACE_EVENT(named_swap_balance_dirty,
 	TP_PROTO(struct address_space *mapping, u64 index,
-		 unsigned long thresh, unsigned long bg_thresh,
-		 unsigned long dirty, unsigned long wb_thresh,
-		 unsigned long wb_dirty, unsigned long dirty_ratelimit,
-		 unsigned long task_ratelimit, unsigned long dirtied,
-		 long pause_ms, unsigned int flags),
+		 const struct named_swap_dirty_trace *t),
 
-	TP_ARGS(mapping, index, thresh, bg_thresh, dirty, wb_thresh, wb_dirty,
-		dirty_ratelimit, task_ratelimit, dirtied, pause_ms, flags),
+	TP_ARGS(mapping, index, t),
 
 	TP_STRUCT__entry(
 		__field(pid_t, pid)
@@ -702,6 +724,22 @@ TRACE_EVENT(named_swap_balance_dirty,
 		__field(unsigned long, dirtied)
 		__field(long, pause_ms)
 		__field(unsigned int, flags)
+		__field(unsigned long, write_bw)
+		__field(unsigned long, avg_write_bw)
+		__field(unsigned long, dirty_rate)
+		__field(unsigned long, pos_ratio)
+		__field(unsigned long, setpoint)
+		__field(unsigned long, freerun_ceil)
+		__field(unsigned long, balanced_dirty_ratelimit)
+		__field(long, period_ms)
+		__field(long, min_pause_ms)
+		__field(long, max_pause_ms)
+		__field(unsigned long, write_bw_kbps)
+		__field(unsigned long, avg_write_bw_kbps)
+		__field(unsigned long, dirty_rate_kbps)
+		__field(unsigned long, dirty_ratelimit_kbps)
+		__field(unsigned long, task_ratelimit_kbps)
+		__field(unsigned long, balanced_dirty_ratelimit_kbps)
 	),
 
 	TP_fast_assign(
@@ -711,26 +749,53 @@ TRACE_EVENT(named_swap_balance_dirty,
 			mapping->host->i_sb->s_dev : mapping->host->i_rdev;
 		__entry->ino = mapping->host->i_ino;
 		__entry->index = index;
-		__entry->thresh = thresh;
-		__entry->bg_thresh = bg_thresh;
-		__entry->dirty = dirty;
-		__entry->wb_thresh = wb_thresh;
-		__entry->wb_dirty = wb_dirty;
-		__entry->dirty_ratelimit = dirty_ratelimit;
-		__entry->task_ratelimit = task_ratelimit;
-		__entry->dirtied = dirtied;
-		__entry->pause_ms = pause_ms;
-		__entry->flags = flags;
+		__entry->thresh = t->thresh;
+		__entry->bg_thresh = t->bg_thresh;
+		__entry->dirty = t->dirty;
+		__entry->wb_thresh = t->wb_thresh;
+		__entry->wb_dirty = t->wb_dirty;
+		__entry->dirty_ratelimit = t->dirty_ratelimit;
+		__entry->task_ratelimit = t->task_ratelimit;
+		__entry->dirtied = t->dirtied;
+		__entry->pause_ms = t->pause_ms;
+		__entry->flags = t->flags;
+		__entry->write_bw = t->write_bw;
+		__entry->avg_write_bw = t->avg_write_bw;
+		__entry->dirty_rate = t->dirty_rate;
+		__entry->pos_ratio = t->pos_ratio;
+		__entry->setpoint = t->setpoint;
+		__entry->freerun_ceil = t->freerun_ceil;
+		__entry->balanced_dirty_ratelimit = t->balanced_dirty_ratelimit;
+		__entry->period_ms = t->period_ms;
+		__entry->min_pause_ms = t->min_pause_ms;
+		__entry->max_pause_ms = t->max_pause_ms;
+		__entry->write_bw_kbps = t->write_bw << (PAGE_SHIFT - 10);
+		__entry->avg_write_bw_kbps = t->avg_write_bw << (PAGE_SHIFT - 10);
+		__entry->dirty_rate_kbps = t->dirty_rate << (PAGE_SHIFT - 10);
+		__entry->dirty_ratelimit_kbps =
+			t->dirty_ratelimit << (PAGE_SHIFT - 10);
+		__entry->task_ratelimit_kbps =
+			t->task_ratelimit << (PAGE_SHIFT - 10);
+		__entry->balanced_dirty_ratelimit_kbps =
+			t->balanced_dirty_ratelimit << (PAGE_SHIFT - 10);
 	),
 
-	TP_printk("pid=%d comm=%s dev=%d:%d ino=%lx index=%llu thresh=%lu bg_thresh=%lu dirty=%lu wb_thresh=%lu wb_dirty=%lu dirty_ratelimit=%lu task_ratelimit=%lu dirtied=%lu pause_ms=%ld freerun=%d dirty_exceeded=%d",
+	TP_printk("pid=%d comm=%s dev=%d:%d ino=%lx index=%llu thresh=%lu bg_thresh=%lu dirty=%lu wb_thresh=%lu wb_dirty=%lu dirty_ratelimit=%lu task_ratelimit=%lu dirtied=%lu pause_ms=%ld freerun=%d dirty_exceeded=%d write_bw=%lu avg_write_bw=%lu dirty_rate=%lu pos_ratio=%lu setpoint=%lu freerun_ceil=%lu balanced_dirty_ratelimit=%lu period_ms=%ld min_pause_ms=%ld max_pause_ms=%ld write_bw_kbps=%lu avg_write_bw_kbps=%lu dirty_rate_kbps=%lu dirty_ratelimit_kbps=%lu task_ratelimit_kbps=%lu balanced_dirty_ratelimit_kbps=%lu",
 		__entry->pid, __entry->comm,
 		MAJOR(__entry->dev), MINOR(__entry->dev), __entry->ino,
 		__entry->index, __entry->thresh, __entry->bg_thresh,
 		__entry->dirty, __entry->wb_thresh, __entry->wb_dirty,
 		__entry->dirty_ratelimit, __entry->task_ratelimit,
 		__entry->dirtied, __entry->pause_ms,
-		!!(__entry->flags & 1), !!(__entry->flags & 2))
+		!!(__entry->flags & 1), !!(__entry->flags & 2),
+		__entry->write_bw, __entry->avg_write_bw, __entry->dirty_rate,
+		__entry->pos_ratio, __entry->setpoint, __entry->freerun_ceil,
+		__entry->balanced_dirty_ratelimit, __entry->period_ms,
+		__entry->min_pause_ms, __entry->max_pause_ms,
+		__entry->write_bw_kbps, __entry->avg_write_bw_kbps,
+		__entry->dirty_rate_kbps, __entry->dirty_ratelimit_kbps,
+		__entry->task_ratelimit_kbps,
+		__entry->balanced_dirty_ratelimit_kbps)
 );
 
 TRACE_EVENT(named_swap_sort_promote,
