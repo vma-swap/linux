@@ -332,13 +332,9 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
     if (!vma)
         return -EINVAL;
 
-    anon_vma = vma->anon_vma;
-    if (!anon_vma)
-        return -EINVAL;
-
-    file = anon_vma->named_swap_file;
-    if (!file)
-        return -EINVAL;
+    file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
 
     old_size = named_swap_file_size(file); 
 
@@ -419,13 +415,9 @@ int named_swap_enlarge_left(struct vm_area_struct *vma, unsigned long delta)
     if (!vma)
         return -EINVAL;
 
-    anon_vma = vma->anon_vma;
-    if (!anon_vma)
-        return -EINVAL;
-
-    file = anon_vma->named_swap_file;
-    if (!file)
-        return -EINVAL;
+    file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
 
     lower = named_swap_lower(file);
     if (!lower)
