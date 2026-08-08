@@ -325,7 +325,6 @@ EXPORT_SYMBOL(named_swap_file_size);
 
 int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
-	struct anon_vma *anon_vma;
     struct file *file;
     loff_t old_size;
 
@@ -408,7 +407,6 @@ int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
 
 int named_swap_enlarge_left(struct vm_area_struct *vma, unsigned long delta)
 {
-    struct anon_vma *anon_vma;
     struct file *file;
     struct file *lower;
 
