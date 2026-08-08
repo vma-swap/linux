@@ -2528,6 +2528,21 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 
 	/* ...but if we can't, allocate a new VMA. */
 	if (!vma) {
+
+		/* If merge failed but we borrowed a named swap file, 
+		 * we must create a new, isolated file instead so we don't map to the preivous file, which is now too small,
+		 * as it was shrunk */
+		 
+		if (map.file && mapping_named_swap(map.file->f_mapping) && map.pgoff != 0) {
+			struct file *fallback_file = named_swap_prepare_mmap(map.pglen << PAGE_SHIFT, NULL);
+			if (!IS_ERR(fallback_file)) {
+				/* Drop the borrowed reference and adopt the fresh file */
+				fput(map.file); 
+				map.file = fallback_file;
+				map.pgoff = 0; 
+			}
+		}
+
 		error = __mmap_new_vma(&map, &vma);
 		if (error)
 			goto unacct_error;
