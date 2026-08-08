@@ -441,7 +441,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		}
 		
 		/* The mapping is no longer anonymous; it is backed by our wrapper file */
-		vm_flags &= ~VM_ANONYMOUS;
+		vm_flags &= ~MAP_ANONYMOUS;
 	}
 
 	if (flags & MAP_FIXED_NOREPLACE) {
