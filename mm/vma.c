@@ -153,6 +153,8 @@ static bool can_vma_merge_before(struct vma_merge_struct *vmg)
 
 	if (is_mergeable_vma(vmg, /* merge_next = */ true) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->next->anon_vma, vmg->next)) {
+
+		/* In the enlarge-left case, pgoff will go underflow - but with pglen added - will suffice*/
 		if (vmg->next->vm_pgoff == vmg->pgoff + pglen)
 			return true;
 	}
@@ -1024,37 +1026,68 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	}
 
 	/* 2. GRANULAR INTERCEPT: We now know which VMA we are merging into (vmg->vma) */
-    if (vmg->vma) {
-        bool is_named_swap = vma_is_named_swap(vmg->vma);
-        
-        /* Enlarge the file BEFORE we attempt to expand the VMA */
-        if (is_named_swap) {
-            if (can_merge_left) {
-                // Expanding rightwards into the gap
-                if (named_swap_enlarge(vmg->vma, gap_len))
-                    return NULL; // Abort merge; fallback to allocating a new isolated VMA
-            } else if (can_merge_right) {
-                // Expanding leftwards into the gap
-                if (named_swap_enlarge_left(vmg->vma, gap_len))
-                    return NULL; 
-            }
-        }
+	if (vmg->vma) {
+		bool is_named_swap = vma_is_named_swap(vmg->vma);
+		unsigned long pgoff_shift = gap_len >> PAGE_SHIFT;
 
-        /* 3. Execute the actual VMA merge */
-        if (!vma_expand(vmg)) {
-            khugepaged_enter_vma(vmg->vma, vmg->flags);
-            vmg->state = VMA_MERGE_SUCCESS;
-            return vmg->vma;
-        } else {
-            /* 4. ROLLBACK: If VMA expansion fails, undo the file expansion */
-            if (is_named_swap) {
-                if (can_merge_left) 
-                    named_swap_shrink(vmg->vma, gap_len);
-                else if (can_merge_right)
-                    named_swap_deallocate(vmg->vma, orig_start, orig_end);
-            }
-        }
-    }
+		/* Enlarge the file BEFORE we attempt to expand the VMA */
+		if (is_named_swap) {
+			if (can_merge_left) {
+				// Expanding rightwards into the gap
+				if (named_swap_enlarge(vmg->vma, gap_len))
+					return NULL; 
+			} else if (can_merge_right) {
+				// Expanding leftwards into the gap
+				if (named_swap_enlarge_left(vmg->vma, gap_len))
+					return NULL; 
+				
+				/* Safely shift all sibling VMAs forward to match the newly injected physical blocks */
+				if (vmg->vma->anon_vma) {
+					struct anon_vma_chain *avc;
+					anon_vma_interval_tree_foreach(avc, &vmg->vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
+						struct vm_area_struct *sibling = avc->vma;
+						anon_vma_interval_tree_pre_update_vma(sibling);
+						sibling->vm_pgoff += pgoff_shift;
+						anon_vma_interval_tree_post_update_vma(sibling);
+					}
+				} else {
+					vmg->vma->vm_pgoff += pgoff_shift;
+				}
+				/* Correct the underflowed vmg->pgoff so the merged VMA anchors at 0! */
+				vmg->pgoff += pgoff_shift;
+			}
+		}
+
+		/* 3. Execute the actual VMA merge */
+		if (!vma_expand(vmg)) {
+			khugepaged_enter_vma(vmg->vma, vmg->flags);
+			vmg->state = VMA_MERGE_SUCCESS;
+			return vmg->vma;
+		} else {
+			/* 4. ROLLBACK: If VMA expansion fails, undo the file and metadata changes */
+			if (is_named_swap) {
+				if (can_merge_left) {
+					named_swap_shrink(vmg->vma, gap_len);
+				} else if (can_merge_right) {
+					named_swap_deallocate(vmg->vma, orig_start, orig_end);
+					
+					/* Revert the pgoff shift */
+					if (vmg->vma->anon_vma) {
+						struct anon_vma_chain *avc;
+						anon_vma_interval_tree_foreach(avc, &vmg->vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
+							struct vm_area_struct *sibling = avc->vma;
+							anon_vma_interval_tree_pre_update_vma(sibling);
+							sibling->vm_pgoff -= pgoff_shift;
+							anon_vma_interval_tree_post_update_vma(sibling);
+						}
+					} else {
+						vmg->vma->vm_pgoff -= pgoff_shift;
+					}
+					vmg->pgoff -= pgoff_shift;
+				}
+			}
+		}
+	}
 
 	return NULL;
 }

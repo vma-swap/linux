@@ -410,6 +410,9 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (IS_ERR_VALUE(addr))
 		return addr;
 
+	/* On enlarge-left case - we temporarily allow underflow of pgoff to survive until the enalrgement in vma_merge_new_range*/
+	bool named_swap_underflow_enlarge_left = false;
+
 	/* Early neighbour adoption - take the adjacent vm_file ptr if both exists with MAP_NAMED_SWAP*/
 	if (flags & MAP_NAMED_SWAP) {
 		struct vm_area_struct *prev, *next;
@@ -426,6 +429,12 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		/* Check if we can adopt the RIGHT neighbor's file */
 		else if (next && next->vm_start == addr + len && vma_is_named_swap(next)) {
 			file = next->vm_file;
+
+			/* Flag intentional underflow if pgoff would be negative */
+			if (next->vm_pgoff < (len >> PAGE_SHIFT)) {
+				named_swap_underflow_enlarge_left = true;
+			}
+
 			pgoff = next->vm_pgoff - (len >> PAGE_SHIFT);
 		} 
 		/*No compatible neighbors? Create a brand new file. */
@@ -456,7 +465,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		unsigned long flags_mask;
 		int err;
 
-		if (!file_mmap_ok(file, inode, pgoff, len))
+		/* Bypass the overflow check ONLY if we flagged an intentional named swap underflow */
+		if (!named_swap_underflow_enlarge_left && !file_mmap_ok(file, inode, pgoff, len))
 			return -EOVERFLOW;
 
 		flags_mask = LEGACY_MAP_MASK;
