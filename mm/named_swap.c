@@ -405,29 +405,6 @@ int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
 			     offset, len);
 }
 
-int named_swap_enlarge_left(struct vm_area_struct *vma, unsigned long delta)
-{
-    struct file *file;
-    struct file *lower;
-
-    if (!vma)
-        return -EINVAL;
-
-    file = vma->vm_file;
-	if (!file)
-		return -EINVAL;
-
-    lower = named_swap_lower(file);
-    if (!lower)
-        return -EINVAL;
-
-    /* 
-     * Inject a new physical block exactly at offset 0, 
-     * physically pushing all existing file data to the right.
-     */
-    return vfs_fallocate(lower, FALLOC_FL_INSERT_RANGE, 0, delta);
-}
-
 static void named_swap_xa_destroy(void)
 {
 	struct file *file;

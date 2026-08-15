@@ -1028,7 +1028,6 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	/* 2. GRANULAR INTERCEPT: We now know which VMA we are merging into (vmg->vma) */
 	if (vmg->vma) {
 		bool is_named_swap = vma_is_named_swap(vmg->vma);
-		unsigned long pgoff_shift = gap_len >> PAGE_SHIFT;
 
 		/* Enlarge the file BEFORE we attempt to expand the VMA */
 		if (is_named_swap) {
@@ -1036,25 +1035,6 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 				// Expanding rightwards into the gap
 				if (named_swap_enlarge(vmg->vma, gap_len))
 					return NULL; 
-			} else if (can_merge_right) {
-				// Expanding leftwards into the gap
-				if (named_swap_enlarge_left(vmg->vma, gap_len))
-					return NULL; 
-				
-				/* Safely shift all sibling VMAs forward to match the newly injected physical blocks */
-				if (vmg->vma->anon_vma) {
-					struct anon_vma_chain *avc;
-					anon_vma_interval_tree_foreach(avc, &vmg->vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
-						struct vm_area_struct *sibling = avc->vma;
-						anon_vma_interval_tree_pre_update_vma(sibling);
-						sibling->vm_pgoff += pgoff_shift;
-						anon_vma_interval_tree_post_update_vma(sibling);
-					}
-				} else {
-					vmg->vma->vm_pgoff += pgoff_shift;
-				}
-				/* Correct the underflowed vmg->pgoff so the merged VMA anchors at 0! */
-				vmg->pgoff += pgoff_shift;
 			}
 		}
 
@@ -1068,22 +1048,6 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 			if (is_named_swap) {
 				if (can_merge_left) {
 					named_swap_shrink(vmg->vma, gap_len);
-				} else if (can_merge_right) {
-					named_swap_deallocate(vmg->vma, orig_start, orig_end);
-					
-					/* Revert the pgoff shift */
-					if (vmg->vma->anon_vma) {
-						struct anon_vma_chain *avc;
-						anon_vma_interval_tree_foreach(avc, &vmg->vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
-							struct vm_area_struct *sibling = avc->vma;
-							anon_vma_interval_tree_pre_update_vma(sibling);
-							sibling->vm_pgoff -= pgoff_shift;
-							anon_vma_interval_tree_post_update_vma(sibling);
-						}
-					} else {
-						vmg->vma->vm_pgoff -= pgoff_shift;
-					}
-					vmg->pgoff -= pgoff_shift;
 				}
 			}
 		}
@@ -3054,43 +3018,6 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				anon_vma_interval_tree_post_update_vma(vma); /*re-attach*/
 
 				perf_event_mmap(vma);
-			}
-		}
-		/*If its named swap, we would like to support grow > vm_pgoff*/
-		else if (vma_is_named_swap(vma)){
-			error = acct_stack_growth(vma, size, grow);
-			if (!error) {
-				/* Physically insert the new blocks at the start of the file */
-                error = named_swap_enlarge_left(vma, grow << PAGE_SHIFT);
-				if (!error) {
-					if (vma->vm_flags & VM_LOCKED)
-						mm->locked_vm += grow;
-					vm_stat_account(mm, vma->vm_flags, grow);
-
-					/* Looping through all other vmas relating to the same file and updating their vm_pgoff */
-					struct anon_vma_chain *avc;
-					anon_vma_interval_tree_foreach(avc, &vma->anon_vma->root->rb_root, 0, ULONG_MAX) {
-						struct vm_area_struct *sibling = avc->vma;
-						
-						if (sibling == vma)
-							continue; /* We handle the expanding VMA outside the loop */
-
-						/* Safely detach, update offset, and re-attach */
-						anon_vma_interval_tree_pre_update_vma(sibling);
-						sibling->vm_pgoff += grow;
-						anon_vma_interval_tree_post_update_vma(sibling);
-					}
-
-					/* Handle the original expanding VMA */
-					anon_vma_interval_tree_pre_update_vma(vma);
-					vma->vm_start = address;
-					/* Note that here we didnt decrease vm_pgoff */
-					vma_iter_store(&vmi, vma);
-					anon_vma_interval_tree_post_update_vma(vma);
-
-					perf_event_mmap(vma);
-				}
-
 			}
 		}
 	}
