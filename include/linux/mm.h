@@ -1005,6 +1005,13 @@ bool named_swap_single_vma_mapping(struct vm_area_struct *vma);
 unsigned int named_swap_same_file_pte_count(struct vm_area_struct *vma,
 					   unsigned long address);
 void setup_named_swap_vmf(struct vm_fault *vmf);
+loff_t named_swap_file_blocks(struct file *file);
+loff_t named_swap_file_size(struct file *file);
+int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta);
+int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta);
+int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
+			  unsigned long end);
+bool is_file_named_swap(struct file *file);
 void named_swap_store_pte(struct mm_struct *mm, struct vm_area_struct *vma,
 			  unsigned long address, pte_t *pte);
 

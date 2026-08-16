@@ -6,6 +6,8 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <linux/mm.h>
+#include <linux/pagemap.h>
 
 struct mmap_state {
 	struct mm_struct *mm;
@@ -74,8 +76,16 @@ static inline bool is_mergeable_vma(struct vma_merge_struct *vmg, bool merge_nex
 	 */
 	if ((vma->vm_flags ^ vmg->flags) & ~VM_SOFTDIRTY)
 		return false;
-	if (vma->vm_file != vmg->file)
-		return false;
+	
+	/* 
+     * Standard VMAs must share the exact same file pointer.
+     * We only bypass this strict match if both are named swap files.
+     */
+    if (vma->vm_file != vmg->file) {
+        if (!is_file_named_swap(vma->vm_file) || !is_file_named_swap(vmg->file))
+            return false;
+    }
+
 	if (!is_mergeable_vm_userfaultfd_ctx(vma, vmg->uffd_ctx))
 		return false;
 	if (!anon_vma_name_eq(anon_vma_name(vma), vmg->anon_name))
@@ -171,7 +181,8 @@ static bool can_vma_merge_after(struct vma_merge_struct *vmg)
 {
 	if (is_mergeable_vma(vmg, /* merge_next = */ false) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->prev->anon_vma, vmg->prev)) {
-		if (vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff)
+		if ((vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff) ||
+			(is_file_named_swap(vmg->prev->vm_file) && is_file_named_swap(vmg->file)))
 			return true;
 	}
 	return false;
@@ -975,6 +986,9 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	bool can_merge_left, can_merge_right;
 	bool just_expand = vmg->merge_flags & VMG_FLAG_JUST_EXPAND;
 
+	/* 1. Capture the exact size of the incoming gap being absorbed */
+    unsigned long gap_len = vmg->end - vmg->start;
+
 	mmap_assert_write_locked(vmg->mm);
 	VM_WARN_ON_VMG(vmg->vma, vmg);
 	/* vmi must point at or before the gap. */
@@ -1016,14 +1030,32 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 		}
 	}
 
-	/*
-	 * Now try to expand adjacent VMA(s). This takes care of removing the
-	 * following VMA if we have VMAs on both sides.
-	 */
-	if (vmg->vma && !vma_expand(vmg)) {
-		khugepaged_enter_vma(vmg->vma, vmg->flags);
-		vmg->state = VMA_MERGE_SUCCESS;
-		return vmg->vma;
+	/* 2. GRANULAR INTERCEPT: We now know which VMA we are merging into (vmg->vma) */
+	if (vmg->vma) {
+		bool is_named_swap = vma_is_named_swap(vmg->vma);
+
+		/* Enlarge the file BEFORE we attempt to expand the VMA */
+		if (is_named_swap) {
+			if (can_merge_left) {
+				// Expanding rightwards into the gap
+				if (named_swap_enlarge(vmg->vma, gap_len))
+					return NULL; 
+			}
+		}
+
+		/* 3. Execute the actual VMA merge */
+		if (!vma_expand(vmg)) {
+			khugepaged_enter_vma(vmg->vma, vmg->flags);
+			vmg->state = VMA_MERGE_SUCCESS;
+			return vmg->vma;
+		} else {
+			/* 4. ROLLBACK: If VMA expansion fails, undo the file and metadata changes */
+			if (is_named_swap) {
+				if (can_merge_left) {
+					named_swap_shrink(vmg->vma, gap_len);
+				}
+			}
+		}
 	}
 
 	return NULL;
@@ -1201,9 +1233,38 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 
 	/* Remove and clean up vmas */
 	mas_set(mas_detach, 0);
-	mas_for_each(mas_detach, vma, ULONG_MAX)
-		remove_vma(vma, /* unreachable = */ false);
+	mas_for_each(mas_detach, vma, ULONG_MAX) {
+		/* Deallocate or shrink the named_swap file right before the vma removal */
+		if (vma_is_named_swap(vma)) {
 
+			unsigned long delta = vma->vm_end - vma->vm_start;
+			
+			/* 1. Calculate the byte offset where this detached VMA ends in the file */
+			loff_t vma_end_offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + delta;
+			
+			/* 2. Retrieve the total size of the backing file */
+			loff_t file_size = named_swap_file_size(vma->vm_file);
+			if (file_size < 0){
+				pr_warn_ratelimited("named_swap: failed to query file size (err=%lld).\n", file_size);
+			}
+			/* 3. Differentiate: Tail-end vs Middle/Left */
+			else if (vma_end_offset == file_size) {
+
+				/* We are unmapping the exact right edge of the file. Shrink it. */
+				int err = named_swap_shrink(vma, delta);
+				if (err) {
+					pr_warn_ratelimited("named_swap: failed to shrink (err=%d).\n", err);
+				}
+			} else {
+				/* We are unmapping from the middle or left. Punch a hole. */
+				int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
+				if (err) {
+					pr_warn_ratelimited("named_swap: failed to punch hole (err=%d). Disk space may be leaked.\n", err);
+				}
+			}
+		}
+		remove_vma(vma, /* unreachable = */ false);
+	}
 	vm_unacct_memory(vms->nr_accounted);
 	validate_mm(mm);
 	if (vms->unlock)
@@ -2467,8 +2528,15 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 		vma = vma_merge_new_range(&vmg);
 	}
 
+	/* ...if succeeded - fput the original named swap file - we dont need it... */
+	if (vma){
+		if (file && is_file_named_swap(file))
+			fput(file);
+	}
+
 	/* ...but if we can't, allocate a new VMA. */
 	if (!vma) {
+
 		error = __mmap_new_vma(&map, &vma);
 		if (error)
 			goto unacct_error;
