@@ -299,6 +299,118 @@ static void named_swap_xa_remove(u64 index)
 		fput(file);
 }
 
+loff_t named_swap_file_blocks(struct file *file) {
+    struct file *lower;
+
+    if (!file)
+        return -EINVAL;
+
+    lower = named_swap_lower(file);
+    if (!lower)
+        return -EINVAL;
+
+    /* Return the number of 512-byte blocks allocated to the lower inode */
+    return file_inode(lower)->i_blocks;
+}
+EXPORT_SYMBOL_GPL(named_swap_file_blocks);
+
+loff_t named_swap_file_size(struct file *file){
+	struct file *lower;
+
+    if (!file)
+        return -EINVAL;
+
+    lower = named_swap_lower(file);
+    if (!lower)
+        return -EINVAL;
+
+    // Use file_inode() to safely get the inode, 
+    // and return it as a 64-bit loff_t
+    return i_size_read(file_inode(lower));
+
+}
+EXPORT_SYMBOL(named_swap_file_size);
+
+int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
+{
+    struct file *file;
+    loff_t old_size;
+
+    if (!vma)
+        return -EINVAL;
+
+    file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
+
+    old_size = named_swap_file_size(file); 
+
+    return vfs_fallocate(file, 0, old_size, delta);
+}
+
+int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
+{
+	struct file *file;
+	struct file *lower;
+	loff_t old_size;
+	loff_t new_size;
+	long ret;
+
+	if (!vma)
+		return -EINVAL;
+
+	file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
+
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
+
+	old_size = named_swap_file_size(file);
+	if (old_size < 0)
+		return old_size;
+
+	if ((loff_t)delta > old_size)
+		return -EINVAL;
+
+	new_size = old_size - (loff_t)delta;
+
+	ret = vfs_truncate(&lower->f_path, new_size);
+	if (ret) return ret;
+
+	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
+	return 0;
+}
+
+int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
+			  unsigned long end)
+{
+	struct file *file;
+	struct file *lower;
+	loff_t offset;
+	loff_t len;
+
+	if (!vma || start >= end)
+		return -EINVAL;
+
+	file = vma->vm_file;
+	if (!file)
+		return -EINVAL;
+
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
+
+	offset = ((loff_t)start - vma->vm_start) +
+		 ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+	len = (loff_t)(end - start);
+
+	return vfs_fallocate(lower,
+			     FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+			     offset, len);
+}
+
 static void named_swap_xa_destroy(void)
 {
 	struct file *file;
@@ -588,6 +700,7 @@ static long named_swap_fallocate(struct file *file, int mode, loff_t offset, lof
 	if (ret) {
 		printk(KERN_ERR "named_swap_fallocate: vfs_fallocate failed: file=%px mode=%d offset=%llu len=%llu ret=%ld\n", file, mode, offset, len, ret);
 	}
+	file->f_inode->i_size = named_swap_lower(file)->f_inode->i_size; // update size of wrapper file to match lower file
 	return ret;
 }
 
@@ -600,6 +713,15 @@ static const struct file_operations named_swap_fops = {
 	.fsync		= named_swap_fsync,
 	.release	= named_swap_release,
 };
+
+
+bool is_file_named_swap(struct file *file){
+	
+	if(!file)
+		return false;
+
+	return file->f_op == &named_swap_fops;
+}
 
 static int named_swap_wipe_dir(const char *path)
 {
