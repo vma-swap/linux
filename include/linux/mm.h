@@ -990,7 +990,14 @@ enum named_swap_reclaim_result {
 	NAMED_SWAP_RECLAIM_DEMOTE,
 };
 
+enum {
+	NAMED_SWAP_FLUSH_ANON = 0,
+	NAMED_SWAP_FLUSH_BACKGROUND = 1,
+	NAMED_SWAP_FLUSH_FILE = 2,
+};
+
 extern int named_swap_min_vma_size;
+extern int named_swap_flush;
 extern char named_swap_root[NAMED_SWAP_PATH_LEN];
 int proc_named_swap_root(const struct ctl_table *table, int write,
 			 void *buffer, size_t *lenp, loff_t *ppos);
