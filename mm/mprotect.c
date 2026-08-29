@@ -681,7 +681,16 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
 		mm_cp_flags |= MM_CP_TRY_CHANGE_WRITABLE;
 	vma_set_page_prot(vma);
 
-	change_protection(tlb, vma, start, end, mm_cp_flags);
+	if (vma_is_named_swap(vma) && (oldflags & VM_ACCESS_FLAGS) &&
+	    !(newflags & VM_ACCESS_FLAGS)) {
+		unmap_page_range(tlb, vma, start, end, NULL);
+		named_swap_uncommit(vma);
+	} else {
+		change_protection(tlb, vma, start, end, mm_cp_flags);
+		if (vma_is_named_swap(vma) && !(oldflags & VM_ACCESS_FLAGS) &&
+		    (newflags & VM_ACCESS_FLAGS))
+			named_swap_allocate_vma(vma, start, end);
+	}
 
 	if ((oldflags & VM_ACCOUNT) && !(newflags & VM_ACCOUNT))
 		vm_unacct_memory(nrpages);

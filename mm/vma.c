@@ -208,6 +208,9 @@ static void __vma_link_file(struct vm_area_struct *vma,
 static void __remove_shared_vm_struct(struct vm_area_struct *vma,
 				      struct address_space *mapping)
 {
+	if (mapping_named_swap(mapping))
+		return;
+
 	if (vma_is_shared_maywrite(vma))
 		mapping_unmap_writable(mapping);
 
@@ -1020,6 +1023,16 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	can_merge_left = can_vma_merge_left(vmg);
 	can_merge_right = !just_expand && can_vma_merge_right(vmg, can_merge_left);
 
+	/*
+	 * Enlarge the left named-swap file before touching the iterator.
+	 * named_swap_enlarge() can return -ENOSPC; the caller then inserts a
+	 * new VMA. Doing that after vma_prev() leaves mas on prev and
+	 * vma_iter_config() WARNs in __mas_set_range().
+	 */
+	if (can_merge_left && vma_is_named_swap(prev) &&
+	    named_swap_enlarge(prev, gap_len))
+		can_merge_left = false;
+
 	/* If we can merge with the next VMA, adjust vmg accordingly. */
 	if (can_merge_right) {
 		vmg->end = next->vm_end;
@@ -1047,32 +1060,14 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 		}
 	}
 
-	/* 2. GRANULAR INTERCEPT: We now know which VMA we are merging into (vmg->vma) */
 	if (vmg->vma) {
-		bool is_named_swap = vma_is_named_swap(vmg->vma);
-
-		/* Enlarge the file BEFORE we attempt to expand the VMA */
-		if (is_named_swap) {
-			if (can_merge_left) {
-				// Expanding rightwards into the gap
-				if (named_swap_enlarge(vmg->vma, gap_len))
-					return NULL; 
-			}
-		}
-
-		/* 3. Execute the actual VMA merge */
 		if (!vma_expand(vmg)) {
 			khugepaged_enter_vma(vmg->vma, vmg->flags);
 			vmg->state = VMA_MERGE_SUCCESS;
 			return vmg->vma;
-		} else {
-			/* 4. ROLLBACK: If VMA expansion fails, undo the file and metadata changes */
-			if (is_named_swap) {
-				if (can_merge_left) {
-					named_swap_shrink(vmg->vma, gap_len);
-				}
-			}
 		}
+		if (vma_is_named_swap(vmg->vma) && can_merge_left)
+			named_swap_shrink(vmg->vma, gap_len);
 	}
 
 	return NULL;
@@ -1251,35 +1246,8 @@ static void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 	/* Remove and clean up vmas */
 	mas_set(mas_detach, 0);
 	mas_for_each(mas_detach, vma, ULONG_MAX) {
-		/* Deallocate or shrink the named_swap file right before the vma removal */
-		if (vma_is_named_swap(vma)) {
-
-			unsigned long delta = vma->vm_end - vma->vm_start;
-			
-			/* 1. Calculate the byte offset where this detached VMA ends in the file */
-			loff_t vma_end_offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + delta;
-			
-			/* 2. Retrieve the total size of the backing file */
-			loff_t file_size = named_swap_file_size(vma->vm_file);
-			if (file_size < 0){
-				pr_warn_ratelimited("named_swap: failed to query file size (err=%lld).\n", file_size);
-			}
-			/* 3. Differentiate: Tail-end vs Middle/Left */
-			else if (vma_end_offset == file_size) {
-
-				/* We are unmapping the exact right edge of the file. Shrink it. */
-				int err = named_swap_shrink(vma, delta);
-				if (err) {
-					pr_warn_ratelimited("named_swap: failed to shrink (err=%d).\n", err);
-				}
-			} else {
-				/* We are unmapping from the middle or left. Punch a hole. */
-				int err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
-				if (err) {
-					pr_warn_ratelimited("named_swap: failed to punch hole (err=%d). Disk space may be leaked.\n", err);
-				}
-			}
-		}
+		if (vma_is_named_swap(vma))
+			named_swap_uncommit(vma);
 		remove_vma(vma, /* unreachable = */ false);
 	}
 	vm_unacct_memory(vms->nr_accounted);
@@ -1801,6 +1769,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma;
 	bool faulted_in_anon_vma = true;
+
 	VMA_ITERATOR(vmi, mm, addr);
 	VMG_VMA_STATE(vmg, &vmi, NULL, vma, addr, addr + len);
 
@@ -1845,6 +1814,17 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		}
 		*need_rmap_locks = (new_vma->vm_pgoff <= vma->vm_pgoff);
 	} else {
+		/*
+		 * MAYMOVE does not go through vma_merge_extend, so grow the
+		 * backing file here the same way in-place enlarge does.
+		 */
+		if (vma_is_named_swap(vma)) {
+			loff_t need = ((loff_t)pgoff << PAGE_SHIFT) + len;
+			loff_t isz = named_swap_file_size(vma->vm_file);
+
+			if (need > isz && named_swap_enlarge(vma, need - isz))
+				goto out;
+		}
 		new_vma = vm_area_dup(vma);
 		if (!new_vma)
 			goto out;
@@ -2433,6 +2413,12 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap)
 	if (!vma)
 		return -ENOMEM;
 
+	/*
+	 * vma_merge_new_range() may have walked the iterator onto prev and
+	 * then aborted (named-swap enlarge ENOSPC). Reset so __mas_set_range()
+	 * is not asked to retarget an active slot that does not contain addr.
+	 */
+	vma_iter_reset(vmi);
 	vma_iter_config(vmi, map->addr, map->end);
 	vma_set_range(vma, map->addr, map->end, map->pgoff);
 	vm_flags_init(vma, map->flags);
@@ -3022,8 +3008,12 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 			error = acct_stack_growth(vma, size, grow);
 			if (!error && vma_is_named_swap_growsdown(vma)) {
 				error = named_swap_enlarge(vma, grow << PAGE_SHIFT);
-				if (error)
+				if (error) {
+					pr_warn_ratelimited(
+						"named_swap: growsdown enlarge failed err=%d grow=%lu\n",
+						error, grow);
 					vm_unacct_memory(grow);
+				}
 			}
 			if (!error) {
 				if (vma->vm_flags & VM_LOCKED)

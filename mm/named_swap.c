@@ -3,9 +3,14 @@
  * Named swap backing files.
  *
  * Creates a root directory and one backing file per anon_vma under
- * <named_swap_root>/<index>.  The root defaults to /.named_swap and can be
- * overridden before first use via named_swap.root= on the kernel cmdline or
- * /proc/sys/vm/named_swap_root.
+ * <pool_dir>/<index>.  Storage mode (fs / swap / hybrid), device, and
+ * directories are owned by named_swap_storage.c.
+ *
+ * Enable is deferred until the caller is on a real root (not initramfs
+ * ramfs/tmpfs) and each configured pool directory is on a writable,
+ * non-ephemeral filesystem.  Swap/hybrid also wait until named_swap.root
+ * is mounted on named_swap.device.  Earlier anonymous mmaps stay ordinary
+ * anon.
  */
 #include <linux/anon_inodes.h>
 #include <linux/atomic.h>
@@ -14,14 +19,20 @@
 #include <linux/dcache.h>
 #include <linux/falloc.h>
 #include <linux/file.h>
+#include <linux/filelock.h>
 #include <linux/fs.h>
+#include <linux/fs_struct.h>
+#include <linux/fsnotify.h>
 #include <linux/init.h>
 #include <linux/init_task.h>
 #include <linux/kernel.h>
 #include <linux/limits.h>
+#include <linux/math.h>
+#include <linux/magic.h>
 #include <linux/mm.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
+#include <linux/overflow.h>
 #include <linux/rmap.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -53,18 +64,13 @@ struct named_swap_file {
 	spinlock_t bind_lock;
 	u64 index;
 	unsigned long nr_pages;
+	enum named_swap_storage_pool pool;
 };
 
 static DEFINE_XARRAY(named_swap_files);
 static DEFINE_MUTEX(named_swap_xa_lock);
-static atomic_long_t named_swap_pages = ATOMIC_LONG_INIT(0);
 
 static struct file *named_swap_file_peek(u64 index);
-
-unsigned long named_swap_total_pages(void)
-{
-	return atomic_long_read(&named_swap_pages);
-}
 
 static struct file *named_swap_lower(struct file *file)
 {
@@ -90,17 +96,8 @@ char *named_swap_file_path(struct file *file, char *buf, int buflen)
 }
 EXPORT_SYMBOL_GPL(named_swap_file_path);
 
-/*
- * Room for root + '/' + decimal u64 index + NUL.  Keep the root short enough
- * that named_swap_build_path() cannot overflow NAMED_SWAP_PATH_LEN.
- */
-#define NAMED_SWAP_INDEX_DIGITS	20
-#define NAMED_SWAP_ROOT_MAX	(NAMED_SWAP_PATH_LEN - 1 - NAMED_SWAP_INDEX_DIGITS)
 /* Indices are stored in the swap PTE offset field (see swp_offset()). */
 #define NAMED_SWAP_INDEX_MAX	SWP_OFFSET_MASK
-
-char named_swap_root[NAMED_SWAP_PATH_LEN] = "/.named_swap";
-EXPORT_SYMBOL_GPL(named_swap_root);
 
 static bool named_swap_enabled;
 static DEFINE_MUTEX(named_swap_lock);
@@ -131,94 +128,6 @@ static int __init named_swap_flush_setup(char *str)
 __setup("named_swap.flush=", named_swap_flush_setup);
 
 static int named_swap_cache_root_inode(void);
-
-static int named_swap_validate_root(const char *path)
-{
-	size_t len;
-
-	if (!path || path[0] != '/')
-		return -EINVAL;
-
-	len = strlen(path);
-	if (!len || len > NAMED_SWAP_ROOT_MAX)
-		return -EINVAL;
-
-	/* Reject trailing slash except for the filesystem root itself. */
-	if (len > 1 && path[len - 1] == '/')
-		return -EINVAL;
-
-	if (strchr(path, '\n'))
-		return -EINVAL;
-
-	return 0;
-}
-
-static int named_swap_set_root(const char *path)
-{
-	int ret;
-
-	ret = named_swap_validate_root(path);
-	if (ret)
-		return ret;
-
-	strscpy(named_swap_root, path, sizeof(named_swap_root));
-	return 0;
-}
-
-static int __init named_swap_root_setup(char *str)
-{
-	int ret;
-
-	if (!str || !*str) {
-		pr_warn("named_swap.root: empty path ignored\n");
-		return 0;
-	}
-
-	ret = named_swap_set_root(str);
-	if (ret)
-		pr_warn("named_swap.root: invalid path '%s' (%d), keeping '%s'\n",
-			str, ret, named_swap_root);
-	else
-		pr_info("named_swap.root: using '%s'\n", named_swap_root);
-	return 1;
-}
-__setup("named_swap.root=", named_swap_root_setup);
-
-int proc_named_swap_root(const struct ctl_table *table, int write,
-			 void *buffer, size_t *lenp, loff_t *ppos)
-{
-	char tmp[NAMED_SWAP_PATH_LEN];
-	struct ctl_table fake;
-	int ret;
-
-	if (!write)
-		return proc_dostring(table, write, buffer, lenp, ppos);
-
-	if (READ_ONCE(named_swap_enabled))
-		return -EBUSY;
-
-	fake = *table;
-	fake.data = tmp;
-	fake.maxlen = sizeof(tmp);
-	memset(tmp, 0, sizeof(tmp));
-	ret = proc_dostring(&fake, 1, buffer, lenp, ppos);
-	if (ret)
-		return ret;
-
-	/* proc_dostring may leave a trailing newline. */
-	if (tmp[0] && tmp[strlen(tmp) - 1] == '\n')
-		tmp[strlen(tmp) - 1] = '\0';
-
-	mutex_lock(&named_swap_lock);
-	if (READ_ONCE(named_swap_enabled)) {
-		mutex_unlock(&named_swap_lock);
-		return -EBUSY;
-	}
-	ret = named_swap_set_root(tmp);
-	mutex_unlock(&named_swap_lock);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(proc_named_swap_root);
 
 /*
  * Allocate the next named swap file index.  Indices must fit in
@@ -399,26 +308,166 @@ loff_t named_swap_file_size(struct file *file){
 
     // Use file_inode() to safely get the inode, 
     // and return it as a 64-bit loff_t
-    return i_size_read(file_inode(lower));
+        return i_size_read(file_inode(lower));
 
 }
 EXPORT_SYMBOL(named_swap_file_size);
 
+/*
+ * Backing-file mutations are kernel-owned.  vfs_truncate() and
+ * vfs_fallocate() revalidate the caller's LSM (AppArmor path_truncate /
+ * file_permission) and deny /nswap even for root-confined daemons.
+ */
+static int named_swap_truncate_lower(struct file *lower, loff_t new_size)
+{
+	struct path *path = &lower->f_path;
+	struct inode *inode = file_inode(lower);
+	struct iattr newattrs = {
+		.ia_size = new_size,
+		.ia_valid = ATTR_SIZE | ATTR_FORCE,
+	};
+	const struct cred *old;
+	int ret;
+
+	if (new_size < 0)
+		return -EINVAL;
+
+	old = override_creds(&init_cred);
+	ret = mnt_want_write(path->mnt);
+	if (ret)
+		goto out_creds;
+	ret = get_write_access(inode);
+	if (ret)
+		goto out_drop_write;
+	ret = break_lease(inode, O_WRONLY);
+	if (ret)
+		goto out_put_write;
+	inode_lock(inode);
+	ret = notify_change(mnt_idmap(path->mnt), path->dentry, &newattrs,
+			    NULL);
+	inode_unlock(inode);
+out_put_write:
+	put_write_access(inode);
+out_drop_write:
+	mnt_drop_write(path->mnt);
+out_creds:
+	revert_creds(old);
+	return ret;
+}
+
+static long named_swap_fallocate_lower(struct file *lower, int mode,
+				       loff_t offset, loff_t len)
+{
+	struct inode *inode = file_inode(lower);
+	const struct cred *old;
+	loff_t sum;
+	long ret;
+
+	if (offset < 0 || len <= 0)
+		return -EINVAL;
+	if (!(lower->f_mode & FMODE_WRITE))
+		return -EBADF;
+	if (!lower->f_op->fallocate)
+		return -EOPNOTSUPP;
+	if (check_add_overflow(offset, len, &sum))
+		return -EFBIG;
+	if (sum > inode->i_sb->s_maxbytes)
+		return -EFBIG;
+
+	old = override_creds(&init_cred);
+	file_start_write(lower);
+	ret = lower->f_op->fallocate(lower, mode, offset, len);
+	if (!ret)
+		fsnotify_modify(lower);
+	file_end_write(lower);
+	revert_creds(old);
+	return ret;
+}
+
+static void named_swap_account_unreserve(struct named_swap_file *ns,
+					 unsigned long pages)
+{
+	if (!ns || !pages)
+		return;
+	if (pages > ns->nr_pages)
+		pages = ns->nr_pages;
+	ns->nr_pages -= pages;
+	named_swap_storage_release(pages, ns->pool);
+}
+
+/*
+ * Charge only growth beyond ns->nr_pages. Create already reserved the
+ * initial size; vfs_fallocate on the wrapper must not reserve it again.
+ */
+static int named_swap_account_reserve_end(struct named_swap_file *ns,
+					  loff_t new_end, unsigned long *charged)
+{
+	unsigned long need;
+	unsigned long extra;
+	int ret;
+
+	*charged = 0;
+	if (!ns || new_end <= 0)
+		return 0;
+	need = DIV_ROUND_UP((unsigned long)new_end, PAGE_SIZE);
+	if (need <= ns->nr_pages)
+		return 0;
+	extra = need - ns->nr_pages;
+	*charged = extra;
+	ret = named_swap_storage_reserve_pool(extra, ns->pool);
+	if (ret)
+		return ret;
+	return 0;
+}
+
 int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 {
-    struct file *file;
-    loff_t old_size;
+	struct file *file;
+	struct file *lower;
+	struct named_swap_file *ns;
+	loff_t old_size;
+	unsigned long pages;
+	long ret;
 
-    if (!vma)
-        return -EINVAL;
+	if (!vma)
+		return -EINVAL;
 
-    file = vma->vm_file;
+	file = vma->vm_file;
 	if (!file)
 		return -EINVAL;
 
-    old_size = named_swap_file_size(file); 
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
 
-    return vfs_fallocate(file, 0, old_size, delta);
+	old_size = named_swap_file_size(file);
+	if (old_size < 0)
+		return old_size;
+
+	ns = file->private_data;
+	pages = 0;
+	if (ns) {
+		ret = named_swap_account_reserve_end(ns, old_size + delta, &pages);
+		if (ret) {
+			pr_warn_ratelimited(
+				"named_swap_enlarge: reserve %lu pages pool=%d file_pages=%lu err=%ld\n",
+				pages, ns->pool, ns->nr_pages, ret);
+			return ret;
+		}
+	} else {
+		pages = DIV_ROUND_UP(delta, PAGE_SIZE);
+	}
+
+	ret = named_swap_fallocate_lower(lower, 0, old_size, delta);
+	if (ret) {
+		if (ns && pages)
+			named_swap_storage_release(pages, ns->pool);
+		return ret;
+	}
+	if (ns)
+		ns->nr_pages += pages;
+	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
+	return 0;
 }
 
 int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
@@ -458,10 +507,13 @@ int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta)
 				    (old_size - 1) >> PAGE_SHIFT))
 		return 0;
 
-	ret = vfs_truncate(&lower->f_path, new_size);
-	if (ret) return ret;
+	ret = named_swap_truncate_lower(lower, new_size);
+	if (ret)
+		return ret;
 
 	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
+	named_swap_account_unreserve(file->private_data,
+				     DIV_ROUND_UP(delta, PAGE_SIZE));
 	return 0;
 }
 
@@ -472,6 +524,7 @@ int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
 	struct file *lower;
 	loff_t offset;
 	loff_t len;
+	long ret;
 
 	if (!vma || start >= end)
 		return -EINVAL;
@@ -493,9 +546,138 @@ int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
 				    (offset + len - 1) >> PAGE_SHIFT))
 		return 0;
 
-	return vfs_fallocate(lower,
+	ret = named_swap_fallocate_lower(lower,
 			     FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
 			     offset, len);
+	if (ret)
+		return ret;
+	named_swap_account_unreserve(file->private_data,
+				     DIV_ROUND_UP((unsigned long)len, PAGE_SIZE));
+	return 0;
+}
+
+/*
+ * True when another VMA in this mm still maps overlapping file offsets.
+ * mremap MAYMOVE installs the dest VMA before unmapping the source; that
+ * munmap must not punch or shrink the file the dest still owns.
+ */
+static bool named_swap_file_range_mapped_elsewhere(struct vm_area_struct *vma)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct vm_area_struct *tmp;
+	unsigned long nr;
+	pgoff_t start, last;
+	VMA_ITERATOR(vmi, mm, 0);
+
+	if (!mm || !vma->vm_file)
+		return false;
+	nr = vma_pages(vma);
+	if (!nr)
+		return false;
+	start = vma->vm_pgoff;
+	last = start + nr - 1;
+
+	for_each_vma(vmi, tmp) {
+		unsigned long n = vma_pages(tmp);
+		pgoff_t a, b;
+
+		if (tmp == vma || tmp->vm_file != vma->vm_file || !n)
+			continue;
+		a = tmp->vm_pgoff;
+		b = a + n - 1;
+		if (a <= last && b >= start)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Drop backing for a named-swap VMA the same way munmap does: shrink the
+ * file when this range is the tail, otherwise punch a hole and keep i_size.
+ * Relocate (mremap MAYMOVE) is not a drop: skip if another VMA still maps
+ * these offsets.
+ */
+int named_swap_uncommit(struct vm_area_struct *vma)
+{
+	unsigned long delta;
+	loff_t vma_end_offset;
+	loff_t file_size;
+	int err;
+
+	if (!vma || !vma_is_named_swap(vma))
+		return -EINVAL;
+
+	if (named_swap_file_range_mapped_elsewhere(vma))
+		return 0;
+
+	delta = vma->vm_end - vma->vm_start;
+	vma_end_offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + delta;
+	file_size = named_swap_file_size(vma->vm_file);
+	if (file_size < 0) {
+		pr_warn_ratelimited("named_swap: failed to query file size (err=%lld).\n",
+				    file_size);
+		return file_size;
+	}
+
+	if (vma_end_offset == file_size)
+		err = named_swap_shrink(vma, delta);
+	else
+		err = named_swap_deallocate(vma, vma->vm_start, vma->vm_end);
+	if (err)
+		pr_warn_ratelimited("named_swap: failed to %s (err=%d).\n",
+				    vma_end_offset == file_size ? "shrink" : "punch hole",
+				    err);
+	return err;
+}
+
+int named_swap_allocate_vma(struct vm_area_struct *vma,
+			    unsigned long start, unsigned long end)
+{
+	struct file *file;
+	struct file *lower;
+	struct named_swap_file *ns;
+	loff_t offset;
+	loff_t len;
+	loff_t old_size;
+	unsigned long pages = 0;
+	long ret;
+
+	if (!vma || !vma_is_named_swap(vma) || start < vma->vm_start ||
+	    end > vma->vm_end || start >= end)
+		return -EINVAL;
+
+	file = vma->vm_file;
+	lower = named_swap_lower(file);
+	if (!lower)
+		return -EINVAL;
+
+	/*
+	 * Only the newly writable range. After mprotect, vma_modify_flags
+	 * may merge this VMA with an already-RW neighbor; ZERO_RANGE of
+	 * that whole VMA truncates page cache of still-mapped folios.
+	 */
+	offset = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) +
+		 (start - vma->vm_start);
+	len = (loff_t)(end - start);
+	old_size = named_swap_file_size(file);
+	if (old_size < 0)
+		return old_size;
+	ns = file->private_data;
+	ret = named_swap_account_reserve_end(ns, offset + len, &pages);
+	if (ret)
+		return ret;
+	ret = named_swap_fallocate_lower(lower, FALLOC_FL_ZERO_RANGE, offset, len);
+	if (ret) {
+		if (pages)
+			named_swap_storage_release(pages, ns->pool);
+		pr_warn_ratelimited("named_swap: failed to allocate range (err=%ld).\n",
+				    ret);
+		return ret;
+	}
+	if (ns && pages)
+		ns->nr_pages += pages;
+	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
+	return 0;
 }
 
 static void named_swap_xa_destroy(void)
@@ -664,6 +846,7 @@ static int named_swap_unlink_file(struct file *file)
 	struct dentry *dentry;
 	struct dentry *parent;
 	struct inode *dir;
+	const struct cred *old;
 	int ret;
 
 	dentry = dget(path->dentry);
@@ -672,9 +855,10 @@ static int named_swap_unlink_file(struct file *file)
 		goto out_dput;
 	}
 
+	old = override_creds(&init_cred);
 	ret = mnt_want_write(path->mnt);
 	if (ret)
-		goto out_dput;
+		goto out_creds;
 
 	parent = dget_parent(dentry);
 	dir = d_inode(parent);
@@ -686,7 +870,8 @@ static int named_swap_unlink_file(struct file *file)
 	inode_unlock(dir);
 	dput(parent);
 	mnt_drop_write(path->mnt);
-
+out_creds:
+	revert_creds(old);
 out_dput:
 	dput(dentry);
 	return ret == -ENOENT ? 0 : ret;
@@ -766,7 +951,7 @@ static int named_swap_release(struct inode *inode, struct file *file)
 		 * Extra refs mean a refcount bug in named_swap teardown.
 		 */
 		WARN_ON(file_count(lower) > 1);
-		atomic_long_sub(ns->nr_pages, &named_swap_pages);
+		named_swap_storage_release(ns->nr_pages, ns->pool);
 		/* xa_remove() fputs the wrapper; we are already in its release. */
 		named_swap_xa_erase(ns->index);
 		spin_lock(&ns->bind_lock);
@@ -784,12 +969,32 @@ static int named_swap_release(struct inode *inode, struct file *file)
 
 static long named_swap_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 {
-	long ret = vfs_fallocate(named_swap_lower(file), mode, offset, len);
-	if (ret)
+	struct named_swap_file *ns = file->private_data;
+	struct file *lower = named_swap_lower(file);
+	loff_t old_size = named_swap_file_size(file);
+	unsigned long pages = 0;
+	long ret;
+
+	if (old_size < 0)
+		return old_size;
+	if (!(mode & FALLOC_FL_PUNCH_HOLE)) {
+		ret = named_swap_account_reserve_end(ns, offset + len, &pages);
+		if (ret)
+			return ret;
+	}
+
+	ret = named_swap_fallocate_lower(lower, mode, offset, len);
+	if (ret) {
+		if (pages)
+			named_swap_storage_release(pages, ns->pool);
 		pr_warn_ratelimited("named_swap_fallocate: vfs_fallocate failed: mode=%d offset=%llu len=%llu ret=%ld\n",
 				    mode, (unsigned long long)offset,
 				    (unsigned long long)len, ret);
-	file->f_inode->i_size = named_swap_lower(file)->f_inode->i_size; // update size of wrapper file to match lower file
+		return ret;
+	}
+	if (ns && pages)
+		ns->nr_pages += pages;
+	file->f_inode->i_size = lower->f_inode->i_size;
 	return ret;
 }
 
@@ -875,7 +1080,8 @@ static int named_swap_cache_root_inode(void)
 	struct inode *inode;
 	int ret;
 
-	ret = kern_path(named_swap_root, LOOKUP_DIRECTORY, &path);
+	ret = kern_path(named_swap_storage_primary_dir(), LOOKUP_DIRECTORY,
+			&path);
 	if (ret)
 		return ret;
 
@@ -889,10 +1095,56 @@ static int named_swap_cache_root_inode(void)
 	return 0;
 }
 
+static bool named_swap_sb_ephemeral(struct super_block *sb)
+{
+	if (!sb || !sb->s_type)
+		return true;
+	if (sb->s_magic == RAMFS_MAGIC || sb->s_magic == TMPFS_MAGIC)
+		return true;
+	return !strcmp(sb->s_type->name, "rootfs");
+}
+
+static bool named_swap_current_root_ephemeral(void)
+{
+	struct path root;
+	bool ephemeral;
+
+	if (!current->fs)
+		return true;
+
+	get_fs_root(current->fs, &root);
+	ephemeral = named_swap_sb_ephemeral(root.dentry->d_sb);
+	path_put(&root);
+	return ephemeral;
+}
+
+static int named_swap_prepare_pool_dir(enum named_swap_storage_pool pool)
+{
+	const char *dir;
+	int ret;
+
+	if (!named_swap_storage_pool_used(pool))
+		return 0;
+
+	dir = named_swap_storage_pool_dir(pool);
+	ret = named_swap_wipe_dir(dir);
+	if (ret == -ENOENT)
+		ret = 0;
+	if (ret)
+		return ret;
+	return named_swap_mkdir(dir, 0700);
+}
+
 static int named_swap_enable_locked(void)
 {
 	const struct cred *old;
 	int ret;
+
+	if (READ_ONCE(named_swap_enabled))
+		return 0;
+
+	if (named_swap_current_root_ephemeral())
+		return -EAGAIN;
 
 	WRITE_ONCE(named_swap_enabled, false);
 	if (named_swap_root_inode) {
@@ -903,13 +1155,14 @@ static int named_swap_enable_locked(void)
 	named_swap_xa_destroy();
 
 	old = override_creds(&init_cred);
-	ret = named_swap_wipe_dir(named_swap_root);
-	if (ret == -ENOENT)
-		ret = 0;
+	ret = named_swap_storage_setup();
 	if (ret)
 		goto out;
 
-	ret = named_swap_mkdir(named_swap_root, 0700);
+	ret = named_swap_prepare_pool_dir(NAMED_SWAP_POOL_SWAP);
+	if (ret)
+		goto out;
+	ret = named_swap_prepare_pool_dir(NAMED_SWAP_POOL_FS);
 	if (ret)
 		goto out;
 
@@ -917,10 +1170,27 @@ static int named_swap_enable_locked(void)
 	if (ret)
 		goto out;
 
+	if (named_swap_sb_ephemeral(named_swap_root_inode->i_sb)) {
+		ret = -EAGAIN;
+		goto out_inode;
+	}
+	if (sb_rdonly(named_swap_root_inode->i_sb)) {
+		ret = -EROFS;
+		goto out_inode;
+	}
+
 	WRITE_ONCE(named_swap_enabled, true);
+	pr_info("named_swap: enabled on %s (%s)\n",
+		named_swap_storage_primary_dir(),
+		named_swap_root_inode->i_sb->s_type->name);
 out:
 	revert_creds(old);
 	return ret;
+
+out_inode:
+	iput(named_swap_root_inode);
+	named_swap_root_inode = NULL;
+	goto out;
 }
 
 static int named_swap_ensure_enabled(void)
@@ -930,30 +1200,29 @@ static int named_swap_ensure_enabled(void)
 	if (likely(READ_ONCE(named_swap_enabled)))
 		return 0;
 
+	/*
+	 * Initramfs still has ramfs/tmpfs as '/'.  Skip the enable lock
+	 * until switch_root; every anonymous mmap retries after that.
+	 */
+	if (named_swap_current_root_ephemeral())
+		return -EAGAIN;
+
 	mutex_lock(&named_swap_lock);
 	ret = READ_ONCE(named_swap_enabled) ? 0 : named_swap_enable_locked();
 	mutex_unlock(&named_swap_lock);
 	return ret;
 }
 
-static int named_swap_build_path(u64 index, char *path, size_t len)
-{
-	int ret;
-
-	ret = scnprintf(path, len, "%s/%llu", named_swap_root, index);
-	if (ret >= len)
-		return -ENAMETOOLONG;
-
-	return 0;
-}
-
-static struct file *named_swap_create_file(unsigned long len)
+static struct file *named_swap_create_file(unsigned long len, bool allocate)
 {
 	char *path;
 	struct file *lower;
 	struct file *file;
 	struct inode *inode;
 	struct named_swap_file *ns;
+	enum named_swap_storage_pool pool = NAMED_SWAP_POOL_FS;
+	unsigned long pages = len >> PAGE_SHIFT;
+	bool reserved = false;
 	u64 index;
 	int ret;
 	const struct cred *old;
@@ -961,10 +1230,11 @@ static struct file *named_swap_create_file(unsigned long len)
 	ret = named_swap_ensure_enabled();
 	if (ret) {
 		/*
-		 * Root is often still ROFS during early userspace. Fall back
-		 * to anonymous memory until the filesystem is writable.
+		 * Initramfs and a still-readonly backing dir are expected.
+		 * Fall back to ordinary anonymous memory until named-swap
+		 * can enable on the real root (and /nswap on the host).
 		 */
-		if (ret != -EROFS)
+		if (ret != -EROFS && ret != -EAGAIN)
 			pr_warn_ratelimited("named_swap: enable failed (%d)\n",
 					    ret);
 		return ERR_PTR(ret);
@@ -983,7 +1253,15 @@ static struct file *named_swap_create_file(unsigned long len)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	ret = named_swap_build_path(index, path, NAMED_SWAP_PATH_LEN);
+	ret = named_swap_storage_reserve(pages, &pool);
+	if (ret) {
+		file = ERR_PTR(ret);
+		goto out;
+	}
+	reserved = true;
+
+	ret = named_swap_storage_build_path(index, pool, path,
+					    NAMED_SWAP_PATH_LEN);
 	if (ret) {
 		printk(KERN_ERR "named_swap_create_file: failed to build path");
 		file = ERR_PTR(ret);
@@ -998,9 +1276,8 @@ static struct file *named_swap_create_file(unsigned long len)
 
 		if (err != -EACCES && err != -EROFS && err != -EEXIST)
 			pr_warn_ratelimited(
-				"named_swap_create_file: filp_open failed: path=%s err=%ld pid=%d comm=%s len=%lu file_index=%llu\n",
-				path, err, current->pid, current->comm, len,
-				index);
+				"named_swap_create_file: filp_open failed: path=%s err=%ld\n",
+				path, err);
 		file = lower;
 		goto out;
 	}
@@ -1014,6 +1291,8 @@ static struct file *named_swap_create_file(unsigned long len)
 	spin_lock_init(&ns->bind_lock);
 	ns->lower = lower;
 	ns->index = index;
+	ns->pool = pool;
+	ns->nr_pages = pages;
 
 	file = anon_inode_create_getfile("[named_swap]", &named_swap_fops, ns,
 				  O_RDWR | O_LARGEFILE, NULL);
@@ -1022,6 +1301,8 @@ static struct file *named_swap_create_file(unsigned long len)
 		kfree(ns);
 		goto out;
 	}
+	/* named_swap_release() now owns the reservation. */
+	reserved = false;
 	inode = file_inode(file);
 	inode->i_mode |= S_IFREG;
 
@@ -1034,20 +1315,47 @@ static struct file *named_swap_create_file(unsigned long len)
 	file_ra_state_init(&file->f_ra, file->f_mapping);
 	mapping_set_named_swap(lower->f_mapping);
 
-	ret = vfs_fallocate(file, FALLOC_FL_ZERO_RANGE, 0, len);
-	if (ret) {
-		trace_named_swap_file_create(file, index, len, ret);
-		if (ret != -EOPNOTSUPP && ret != -EROFS)
-			pr_warn_ratelimited(
-				"named_swap_create_file: vfs_fallocate failed: len=%lu ret=%d\n",
-				len, ret);
-		fput(file);
-		file = ERR_PTR(ret);
-		goto out;
+	if (allocate) {
+		/*
+		 * Fallocate the lower file. vfs_fallocate() on the wrapper
+		 * would named_swap_fallocate() and reserve the same pages
+		 * again, filling the pool during boot/fork.
+		 */
+		ret = named_swap_fallocate_lower(lower, FALLOC_FL_ZERO_RANGE,
+						 0, len);
+		if (ret) {
+			trace_named_swap_file_create(file, index, len, ret);
+			if (ret != -EOPNOTSUPP && ret != -EROFS)
+				pr_warn_ratelimited(
+					"named_swap_create_file: vfs_fallocate failed: len=%lu ret=%d\n",
+					len, ret);
+			/*
+			 * Keep the named-swap file. A full backing fs must not
+			 * turn mmap/fork into -ENOMEM; sparse i_size still
+			 * gives the VMA a stable identity, and later writes
+			 * fallocate the range they touch.
+			 */
+			if (ret != -ENOSPC && ret != -EDQUOT) {
+				fput(file);
+				file = ERR_PTR(ret);
+				goto out;
+			}
+			allocate = false;
+		}
 	}
-	i_size_write(inode, len);
-	ns->nr_pages = len >> PAGE_SHIFT;
-	atomic_long_add(ns->nr_pages, &named_swap_pages);
+	if (!allocate) {
+		ret = named_swap_truncate_lower(lower, len);
+		if (ret) {
+			trace_named_swap_file_create(file, index, len, ret);
+			pr_warn_ratelimited(
+				"named_swap_create_file: truncate failed: len=%lu ret=%d\n",
+				len, ret);
+			fput(file);
+			file = ERR_PTR(ret);
+			goto out;
+		}
+	}
+	i_size_write(inode, i_size_read(file_inode(lower)));
 	trace_named_swap_file_create(file, index, len, 0);
 	lower->f_mapping->anon_vma = NULL;
 
@@ -1060,13 +1368,16 @@ static struct file *named_swap_create_file(unsigned long len)
 		goto out;
 	}
 out:
+	if (reserved)
+		named_swap_storage_release(pages, pool);
 	kfree(path);
 	return file;
 }
 
-struct file *named_swap_prepare_mmap(unsigned long len, unsigned long *flag) {
-
-	struct file *file = named_swap_create_file(len);
+struct file *named_swap_prepare_mmap(unsigned long len, unsigned long *flag,
+				     bool allocate)
+{
+	struct file *file = named_swap_create_file(len, allocate);
 	
 	if (IS_ERR(file))
 		return NULL;
@@ -1303,7 +1614,12 @@ struct folio *named_swap_seq_next(struct address_space *mapping,
 		return NULL;
 	return next;
 }
-*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd))
+
+static int named_swap_convert_split_pmd(pmd_t *pmd, unsigned long addr,
+					unsigned long next,
+					struct mm_walk *walk)
+{
+	if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd))
 		split_huge_pmd(walk->vma, pmd, addr);
 	return 0;
 }
@@ -1758,7 +2074,8 @@ static int named_swap_convert_to_named(struct vm_area_struct *vma)
 		return -EFBIG;
 	len = (unsigned long)need;
 
-	file = named_swap_prepare_mmap(len, NULL);
+	file = named_swap_prepare_mmap(len, NULL,
+				       !!(vma->vm_flags & VM_ACCESS_FLAGS));
 	if (IS_ERR_OR_NULL(file))
 		return file ? PTR_ERR(file) : -ENOMEM;
 
