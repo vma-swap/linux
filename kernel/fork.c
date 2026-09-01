@@ -931,12 +931,13 @@ retry_named_swap:
 		 */
 		file = tmp->vm_file;
 		if (file && mapping_named_swap(file->f_mapping)) {
-			struct file *orig_file = file;
+			struct file *orig_file = get_file(file);
 			struct named_swap_fork_file *prepared;
 
 			prepared = named_swap_next_fork_file(&prepared_named_swap,
 							     mpnt);
 			if (IS_ERR(prepared)) {
+				fput(orig_file);
 				retval = PTR_ERR(prepared);
 				goto fail_named_swap_vma;
 			}
@@ -945,6 +946,7 @@ retry_named_swap:
 			if (anon_vma_prepare(tmp)) {
 				fput(tmp->vm_file);
 				tmp->vm_file = orig_file;
+				fput(orig_file);
 				retval = -ENOMEM;
 				goto fail_named_swap_vma;
 			}
@@ -956,10 +958,33 @@ retry_named_swap:
 				mpnt->vm_file = orig_file;
 				fput(tmp->vm_file);
 				tmp->vm_file = orig_file;
+				fput(orig_file);
 				retval = -ENOMEM;
 				goto fail_named_swap_vma;
 			}
 			named_swap_link(mpnt);
+
+			/*
+			 * Link the vma into the MT. After using __mt_dup(), memory
+			 * allocation is not necessary here, so it cannot fail.
+			 */
+			vma_iter_bulk_store(&vmi, tmp);
+
+			mm->map_count++;
+
+			if (tmp->vm_ops && tmp->vm_ops->open)
+				tmp->vm_ops->open(tmp);
+
+			if (!(tmp->vm_flags & VM_WIPEONFORK))
+				retval = copy_page_range(tmp, mpnt);
+			if (!retval)
+				named_swap_artifact_file(orig_file, oldmm);
+			fput(orig_file);
+			if (retval) {
+				mpnt = vma_next(&vmi);
+				goto loop_out;
+			}
+			continue;
 		}
 
 		/*

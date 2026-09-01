@@ -53,6 +53,8 @@
 #include <linux/pagewalk.h>
 #include <linux/buffer_head.h>
 #include <linux/backing-dev.h>
+#include <linux/bitmap.h>
+#include <linux/sched/mm.h>
 #include "internal.h"
 
 /*
@@ -65,6 +67,7 @@ struct named_swap_file {
 	u64 index;
 	unsigned long nr_pages;
 	enum named_swap_storage_pool pool;
+	bool artifact;
 };
 
 static DEFINE_XARRAY(named_swap_files);
@@ -355,8 +358,9 @@ out_creds:
 	return ret;
 }
 
-static long named_swap_fallocate_lower(struct file *lower, int mode,
-				       loff_t offset, loff_t len)
+static long named_swap_fallocate_lower_gfp(struct file *lower, int mode,
+					   loff_t offset, loff_t len,
+					   bool start_write)
 {
 	struct inode *inode = file_inode(lower);
 	const struct cred *old;
@@ -375,13 +379,21 @@ static long named_swap_fallocate_lower(struct file *lower, int mode,
 		return -EFBIG;
 
 	old = override_creds(&init_cred);
-	file_start_write(lower);
+	if (start_write)
+		file_start_write(lower);
 	ret = lower->f_op->fallocate(lower, mode, offset, len);
 	if (!ret)
 		fsnotify_modify(lower);
-	file_end_write(lower);
+	if (start_write)
+		file_end_write(lower);
 	revert_creds(old);
 	return ret;
+}
+
+static long named_swap_fallocate_lower(struct file *lower, int mode,
+				       loff_t offset, loff_t len)
+{
+	return named_swap_fallocate_lower_gfp(lower, mode, offset, len, true);
 }
 
 static void named_swap_account_unreserve(struct named_swap_file *ns,
@@ -436,6 +448,10 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 	if (!file)
 		return -EINVAL;
 
+	ns = file->private_data;
+	if (ns && ns->artifact)
+		return -EPERM;
+
 	lower = named_swap_lower(file);
 	if (!lower)
 		return -EINVAL;
@@ -444,7 +460,6 @@ int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta)
 	if (old_size < 0)
 		return old_size;
 
-	ns = file->private_data;
 	pages = 0;
 	if (ns) {
 		ret = named_swap_account_reserve_end(ns, old_size + delta, &pages);
@@ -647,6 +662,10 @@ int named_swap_allocate_vma(struct vm_area_struct *vma,
 		return -EINVAL;
 
 	file = vma->vm_file;
+	ns = file->private_data;
+	if (ns && ns->artifact)
+		return -EPERM;
+
 	lower = named_swap_lower(file);
 	if (!lower)
 		return -EINVAL;
@@ -662,7 +681,6 @@ int named_swap_allocate_vma(struct vm_area_struct *vma,
 	old_size = named_swap_file_size(file);
 	if (old_size < 0)
 		return old_size;
-	ns = file->private_data;
 	ret = named_swap_account_reserve_end(ns, offset + len, &pages);
 	if (ret)
 		return ret;
@@ -678,6 +696,303 @@ int named_swap_allocate_vma(struct vm_area_struct *vma,
 		ns->nr_pages += pages;
 	i_size_write(file_inode(file), i_size_read(file_inode(lower)));
 	return 0;
+}
+
+struct named_swap_artifact_walk {
+	struct address_space *mapping;
+	u64 index;
+	unsigned long *keep;
+	unsigned long npages;
+};
+
+static void named_swap_artifact_keep(unsigned long *keep, unsigned long npages,
+				     pgoff_t index, unsigned int nr)
+{
+	if (!keep || !nr || index >= npages)
+		return;
+	if (index + nr > npages)
+		nr = npages - index;
+	bitmap_set(keep, index, nr);
+}
+
+static int named_swap_artifact_split_pmd(pmd_t *pmd, unsigned long addr,
+					 unsigned long next,
+					 struct mm_walk *walk)
+{
+	if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd))
+		split_huge_pmd(walk->vma, pmd, addr);
+	return 0;
+}
+
+static int named_swap_artifact_pte(pte_t *ptep, unsigned long addr,
+				   unsigned long next, struct mm_walk *walk)
+{
+	struct named_swap_artifact_walk *ctx = walk->private;
+	struct vm_area_struct *vma = walk->vma;
+	pte_t pte;
+	pgoff_t pgoff;
+	struct folio *folio;
+
+	if (!vma)
+		return 0;
+
+	pte = ptep_get(ptep);
+	if (pte_none(pte))
+		return 0;
+
+	pgoff = linear_page_index(vma, addr);
+	if (pte_present(pte)) {
+		if (is_zero_pfn(pte_pfn(pte)))
+			return 0;
+		folio = vm_normal_folio(vma, addr, pte);
+		if (folio && folio->mapping == ctx->mapping)
+			named_swap_artifact_keep(ctx->keep, ctx->npages,
+						 folio->index,
+						 folio_nr_pages(folio));
+		return 0;
+	}
+
+	if (is_named_swap_pte(pte)) {
+		swp_entry_t entry = pte_to_swp_entry(pte);
+
+		if (named_swap_entry_index(entry) == ctx->index)
+			named_swap_artifact_keep(ctx->keep, ctx->npages,
+						 pgoff, 1);
+	}
+	return 0;
+}
+
+static const struct mm_walk_ops named_swap_artifact_wrlock_ops = {
+	.pmd_entry	= named_swap_artifact_split_pmd,
+	.pte_entry	= named_swap_artifact_pte,
+	.walk_lock	= PGWALK_WRLOCK,
+};
+
+static const struct mm_walk_ops named_swap_artifact_rdlock_ops = {
+	.pmd_entry	= named_swap_artifact_split_pmd,
+	.pte_entry	= named_swap_artifact_pte,
+	.walk_lock	= PGWALK_RDLOCK,
+};
+
+static void named_swap_artifact_scan_xarray(struct address_space *mapping,
+					    unsigned long *keep,
+					    unsigned long npages)
+{
+	XA_STATE(xas, &mapping->i_pages, 0);
+	void *entry;
+
+	if (!mapping || !npages)
+		return;
+
+	rcu_read_lock();
+	xas_for_each(&xas, entry, npages - 1) {
+		pgoff_t index;
+		unsigned int nr = 1;
+
+		if (xas_retry(&xas, entry))
+			continue;
+		index = xas.xa_index;
+		if (!xa_is_value(entry)) {
+			struct folio *folio = entry;
+
+			index = folio->index;
+			nr = folio_nr_pages(folio);
+		}
+		named_swap_artifact_keep(keep, npages, index, nr);
+	}
+	rcu_read_unlock();
+}
+
+static void named_swap_artifact_walk_vma(struct vm_area_struct *vma,
+					 const struct mm_walk_ops *ops,
+					 struct named_swap_artifact_walk *ctx)
+{
+	if (!vma || !vma_is_named_swap(vma))
+		return;
+	walk_page_vma(vma, ops, ctx);
+}
+
+#define NAMED_SWAP_ARTIFACT_VMA_MAX 64
+#define NAMED_SWAP_ARTIFACT_MM_MAX 32
+
+static int named_swap_artifact_scan_ptes(struct anon_vma *anon_vma,
+					 struct mm_struct *only_mm,
+					 struct named_swap_artifact_walk *ctx)
+{
+	struct anon_vma_chain *avc;
+	struct vm_area_struct *vmas[NAMED_SWAP_ARTIFACT_VMA_MAX];
+	unsigned int n = 0, i;
+	pgoff_t last = ctx->npages - 1;
+
+	if (only_mm)
+		mmap_assert_write_locked(only_mm);
+
+	anon_vma_lock_read(anon_vma);
+	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root, 0, last) {
+		struct vm_area_struct *vma = avc->vma;
+
+		if (!vma)
+			continue;
+		if (only_mm && vma->vm_mm != only_mm)
+			continue;
+		if (n == NAMED_SWAP_ARTIFACT_VMA_MAX) {
+			anon_vma_unlock_read(anon_vma);
+			return -ENOMEM;
+		}
+		vmas[n++] = vma;
+	}
+	anon_vma_unlock_read(anon_vma);
+
+	if (only_mm) {
+		for (i = 0; i < n; i++)
+			named_swap_artifact_walk_vma(vmas[i],
+					&named_swap_artifact_wrlock_ops, ctx);
+		return 0;
+	}
+
+	{
+		struct mm_struct *mms[NAMED_SWAP_ARTIFACT_MM_MAX];
+		unsigned int nm = 0, j;
+		bool overflow = false;
+
+		for (i = 0; i < n; i++) {
+			struct mm_struct *mm = vmas[i]->vm_mm;
+
+			if (!mm || !mmget_not_zero(mm))
+				continue;
+			for (j = 0; j < nm; j++) {
+				if (mms[j] == mm) {
+					mmput(mm);
+					goto next_vma;
+				}
+			}
+			if (nm == NAMED_SWAP_ARTIFACT_MM_MAX) {
+				mmput(mm);
+				overflow = true;
+				break;
+			}
+			mms[nm++] = mm;
+next_vma:
+			;
+		}
+
+		if (overflow) {
+			for (i = 0; i < nm; i++)
+				mmput(mms[i]);
+			return -ENOMEM;
+		}
+
+		for (i = 0; i < nm; i++) {
+			struct vm_area_struct *vma;
+			VMA_ITERATOR(vmi, mms[i], 0);
+
+			if (mmap_read_lock_killable(mms[i])) {
+				mmput(mms[i]);
+				continue;
+			}
+			for_each_vma(vmi, vma)
+				named_swap_artifact_walk_vma(vma,
+					&named_swap_artifact_rdlock_ops, ctx);
+			mmap_read_unlock(mms[i]);
+			mmput(mms[i]);
+		}
+	}
+	return 0;
+}
+
+static void named_swap_artifact_punch(struct named_swap_file *ns,
+				      unsigned long *keep, unsigned long npages)
+{
+	struct file *lower = ns->lower;
+	unsigned long start, end;
+	unsigned long punched = 0;
+
+	if (!lower || !npages)
+		return;
+
+	for_each_clear_bitrange(start, end, keep, npages) {
+		loff_t off = (loff_t)start << PAGE_SHIFT;
+		loff_t len = (loff_t)(end - start) << PAGE_SHIFT;
+		long ret;
+
+		ret = named_swap_fallocate_lower_gfp(lower,
+				FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+				off, len, false);
+		if (!ret)
+			punched += end - start;
+	}
+	if (!punched)
+		return;
+	if (punched > ns->nr_pages)
+		punched = ns->nr_pages;
+	named_swap_storage_release(punched, ns->pool);
+	ns->nr_pages -= punched;
+}
+
+/*
+ * Mark a named-swap file non-allocatable and punch never-allocated
+ * reservations. only_mm restricts the PTE walk (fork: parent mm).
+ * No-op while the file's anon_vma still has active allocators.
+ */
+void named_swap_artifact_file(struct file *file, struct mm_struct *only_mm)
+{
+	struct named_swap_file *ns;
+	struct address_space *mapping;
+	struct anon_vma *anon_vma;
+	struct named_swap_artifact_walk ctx;
+	unsigned long *keep;
+	unsigned long npages;
+	loff_t size;
+	int err;
+
+	if (!file || !mapping_named_swap(file->f_mapping))
+		return;
+
+	ns = file->private_data;
+	if (!ns || ns->artifact)
+		return;
+
+	mapping = file->f_mapping;
+	anon_vma = mapping->anon_vma;
+	if (!anon_vma)
+		return;
+
+	anon_vma_lock_read(anon_vma);
+	if (anon_vma->num_active_vmas) {
+		anon_vma_unlock_read(anon_vma);
+		return;
+	}
+	anon_vma_unlock_read(anon_vma);
+
+	spin_lock(&ns->bind_lock);
+	if (ns->artifact) {
+		spin_unlock(&ns->bind_lock);
+		return;
+	}
+	ns->artifact = true;
+	spin_unlock(&ns->bind_lock);
+
+	size = named_swap_file_size(file);
+	if (size <= 0)
+		return;
+
+	npages = DIV_ROUND_UP((unsigned long)size, PAGE_SIZE);
+	keep = kvcalloc(BITS_TO_LONGS(npages), sizeof(unsigned long),
+			GFP_NOWAIT | __GFP_NOWARN);
+	if (!keep)
+		return;
+
+	ctx.mapping = mapping;
+	ctx.index = ns->index;
+	ctx.keep = keep;
+	ctx.npages = npages;
+
+	named_swap_artifact_scan_xarray(mapping, keep, npages);
+	err = named_swap_artifact_scan_ptes(anon_vma, only_mm, &ctx);
+	if (!err)
+		named_swap_artifact_punch(ns, keep, npages);
+
+	kvfree(keep);
 }
 
 static void named_swap_xa_destroy(void)
@@ -977,6 +1292,8 @@ static long named_swap_fallocate(struct file *file, int mode, loff_t offset, lof
 
 	if (old_size < 0)
 		return old_size;
+	if (ns && ns->artifact && !(mode & FALLOC_FL_PUNCH_HOLE))
+		return -EPERM;
 	if (!(mode & FALLOC_FL_PUNCH_HOLE)) {
 		ret = named_swap_account_reserve_end(ns, offset + len, &pages);
 		if (ret)
@@ -1401,6 +1718,7 @@ void named_swap_link(struct vm_area_struct *vma)
 	struct address_space *mapping = file->f_mapping;
 	u64 old_index = 0;
 	bool drop_old_index = false;
+	bool keep_old_index = false;
 	bool refresh_link;
 
 	VM_BUG_ON_VMA(!anon_vma, vma);
@@ -1422,9 +1740,13 @@ void named_swap_link(struct vm_area_struct *vma)
 
 			if (old_mapping->anon_vma == anon_vma)
 				old_mapping->anon_vma = NULL;
+			else if (old_mapping->anon_vma)
+				keep_old_index = true;
 			if (old_ns) {
 				old_index = old_ns->index;
 				drop_old_index = true;
+				if (old_ns->artifact)
+					keep_old_index = true;
 			}
 		}
 		get_file(file);
@@ -1433,7 +1755,7 @@ void named_swap_link(struct vm_area_struct *vma)
 	spin_unlock(&ns->bind_lock);
 	if (old_file) {
 		fput(old_file);
-		if (drop_old_index)
+		if (drop_old_index && !keep_old_index)
 			named_swap_xa_remove(old_index);
 	}
 	trace_named_swap_link(file, vma, anon_vma, ns->index, refresh_link);

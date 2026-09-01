@@ -1055,6 +1055,7 @@ int named_swap_allocate_vma(struct vm_area_struct *vma,
 char *named_swap_file_path(struct file *file, char *buf, int buflen);
 void named_swap_link(struct vm_area_struct *vma);
 void named_swap_unlink(struct anon_vma *anon_vma);
+void named_swap_artifact_file(struct file *file, struct mm_struct *only_mm);
 int named_swap_file_index(struct file *file, u64 *index);
 u64 named_swap_mapping_index(struct address_space *mapping);
 bool named_swap_single_vma_mapping(struct vm_area_struct *vma);
