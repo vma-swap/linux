@@ -126,6 +126,32 @@
  *    ->private_lock		(zap_pte_range->block_dirty_folio)
  */
 
+#ifdef CONFIG_LRU_GEN
+static void named_swap_note_cache_delete_lru(struct folio *folio,
+					     struct address_space *mapping)
+{
+	static DEFINE_RATELIMIT_STATE(rs, 5 * HZ, 4);
+
+	if (!mapping_named_swap(mapping) || !folio_test_lru(folio))
+		return;
+	if (!__ratelimit(&rs))
+		return;
+	/*
+	 * folio_lru_gen_type() keys off folio->mapping. Clearing mapping
+	 * here turns NAMED into FILE on the last put, so the NAMED
+	 * MGLRU counter is never decremented.
+	 */
+	pr_warn("named_swap: cache delete on LRU folio=%p idx=%lu type=%d (NULL mapping -> %d)\n",
+		folio, folio->index, folio_lru_gen_type(folio), LRU_GEN_FILE);
+	dump_stack();
+}
+#else
+static inline void named_swap_note_cache_delete_lru(struct folio *folio,
+					     struct address_space *mapping)
+{
+}
+#endif
+
 static void page_cache_delete(struct address_space *mapping,
 				   struct folio *folio, void *shadow)
 {
@@ -139,6 +165,7 @@ static void page_cache_delete(struct address_space *mapping,
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 
+	named_swap_note_cache_delete_lru(folio, mapping);
 	xas_store(&xas, shadow);
 	xas_init_marks(&xas);
 
@@ -256,6 +283,8 @@ void filemap_remove_folio(struct folio *folio)
 	struct address_space *mapping = folio->mapping;
 
 	BUG_ON(!folio_test_locked(folio));
+	/* Isolate NAMED MGLRU before mapping is cleared (see page_cache_delete). */
+	named_swap_folio_off_lru(folio);
 	spin_lock(&mapping->host->i_lock);
 	xa_lock_irq(&mapping->i_pages);
 	__filemap_remove_folio(folio, NULL);
@@ -311,6 +340,7 @@ static void page_cache_delete_batch(struct address_space *mapping,
 
 		WARN_ON_ONCE(!folio_test_locked(folio));
 
+		named_swap_note_cache_delete_lru(folio, mapping);
 		folio->mapping = NULL;
 		/* Leave folio->index set: truncation lookup relies on it */
 
@@ -328,6 +358,11 @@ void delete_from_page_cache_batch(struct address_space *mapping,
 
 	if (!folio_batch_count(fbatch))
 		return;
+
+	if (mapping_named_swap(mapping))
+		lru_add_drain_all();
+	for (i = 0; i < folio_batch_count(fbatch); i++)
+		named_swap_folio_off_lru(fbatch->folios[i]);
 
 	spin_lock(&mapping->host->i_lock);
 	xa_lock_irq(&mapping->i_pages);

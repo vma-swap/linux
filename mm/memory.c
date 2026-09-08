@@ -1537,6 +1537,19 @@ static __always_inline void zap_present_folio_ptes(struct mmu_gather *tlb,
 	if (unlikely(userfaultfd_pte_wp(vma, ptent)))
 		*any_skipped = zap_install_uffd_wp_if_needed(vma, addr, pte,
 							     nr, details, ptent);
+	if (vma_is_named_swap(vma) && details &&
+	    (details->zap_flags & ZAP_FLAG_NAMED_SWAP_KEEP) &&
+	    !folio_test_anon(folio)) {
+		unsigned int i;
+
+		for (i = 0; i < nr; i++) {
+			unsigned long a = addr + (unsigned long)i * PAGE_SIZE;
+			pte_t *p = pte + i;
+
+			if (pte_none(ptep_get(p)))
+				named_swap_store_pte(mm, vma, a, p);
+		}
+	}
 
 	if (!delay_rmap) {
 		folio_remove_rmap_ptes(folio, page, nr, vma);
@@ -1667,6 +1680,8 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 			return 1;
 	} else if (is_named_swap_entry(entry)) {
 		VM_BUG_ON_VMA(!vma_is_named_swap(vma), vma);
+		if (details && (details->zap_flags & ZAP_FLAG_NAMED_SWAP_KEEP))
+			return 1;
 	} else {
 		/* We should have covered all the swap entry types */
 		pr_alert("unrecognized swap entry 0x%lx\n", entry.val);
@@ -1905,6 +1920,10 @@ void unmap_page_range(struct mmu_gather *tlb,
 	unsigned long next;
 
 	BUG_ON(addr >= end);
+	if (vma_is_named_swap(vma))
+		named_swap_vma_log(vma, NS_VOP_ZAP, addr, end - addr,
+				   named_swap_file_size(vma->vm_file),
+				   0, 0);
 	tlb_start_vma(tlb, vma);
 	pgd = pgd_offset(vma->vm_mm, addr);
 	do {
@@ -5740,6 +5759,45 @@ static void trace_named_swap_vmf_fault(struct vm_fault *vmf,
 	trace_named_swap_fault(vmf->vma, vmf->address, vmf->flags,
 			       named_swap_vmf_index(vmf), path, alias_count,
 			       mapcount, ret);
+	switch (path) {
+	case NAMED_SWAP_FAULT_MISSING_READ:
+		named_swap_vma_log(vmf->vma, NS_VOP_FAULT_ZERO, vmf->address,
+				   ret, 0, 0, ret);
+		break;
+	case NAMED_SWAP_FAULT_MISSING_WRITE:
+		named_swap_vma_log(vmf->vma, NS_VOP_FAULT_WRITE, vmf->address,
+				   ret, 0, 0, ret);
+		break;
+	case NAMED_SWAP_FAULT_WP_ZERO:
+		named_swap_vma_log(vmf->vma, NS_VOP_FAULT_WP_ZERO, vmf->address,
+				   ret, 0, 0, ret);
+		break;
+	case NAMED_SWAP_FAULT_WP_COW:
+		named_swap_vma_log(vmf->vma, NS_VOP_FAULT_WP_COW, vmf->address,
+				   ret, 0, 0, ret);
+		break;
+	case NAMED_SWAP_FAULT_REFAULT:
+		named_swap_vma_log(vmf->vma, NS_VOP_FAULT_REFAULT, vmf->address,
+				   ret, 0, 0, ret);
+		break;
+	default:
+		break;
+	}
+}
+
+static bool named_swap_pgoff_cached(struct vm_area_struct *vma,
+				    unsigned long addr)
+{
+	struct folio *folio;
+
+	if (!vma->vm_file || !vma->vm_file->f_mapping)
+		return false;
+	folio = filemap_get_folio(vma->vm_file->f_mapping,
+				  linear_page_index(vma, addr));
+	if (IS_ERR(folio))
+		return false;
+	folio_put(folio);
+	return true;
 }
 
 static vm_fault_t named_swap_missing_write(struct vm_fault *vmf);
@@ -5903,11 +5961,21 @@ static vm_fault_t named_swap_missing_write(struct vm_fault *vmf)
 	return fault_dirty_shared_page(vmf);
 }
 
+static void named_swap_set_zero_pte(struct vm_area_struct *vma,
+				    unsigned long addr, pte_t *pte, pte_t entry)
+{
+	/*
+	 * First-ever read of a never-written pgoff may use the global
+	 * zero page. Installing that PTE after a write to the same
+	 * file+pgoff is lost data (rg / V8 NULL-Map).
+	 */
+	VM_BUG_ON(named_swap_check_zero_read(vma, addr));
+	set_pte_at(vma->vm_mm, addr, pte, entry);
+}
+
 static vm_fault_t named_swap_read_zero(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
-
-	named_swap_check_zero_read(vma, vmf->address);
 	pte_t entry, *pte;
 	vm_fault_t ret = 0;
 	pgoff_t nr_pages = READ_ONCE(fault_around_pages);
@@ -5951,7 +6019,7 @@ static vm_fault_t named_swap_read_zero(struct vm_fault *vmf)
 	 * hole fault-around behavior for the read half).
 	 */
 	if (nr_pages <= 1 || uffd_disable_fault_around(vma)) {
-		set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+		named_swap_set_zero_pte(vma, vmf->address, vmf->pte, entry);
 		update_mmu_cache_range(vmf, vma, vmf->address, vmf->pte, 1);
 		goto unlock;
 	}
@@ -5968,7 +6036,9 @@ static vm_fault_t named_swap_read_zero(struct vm_fault *vmf)
 
 		if (!pte_none(old))
 			continue;
-		set_pte_at(vma->vm_mm, addr, pte, entry);
+		if (named_swap_pgoff_cached(vma, addr))
+			continue;
+		named_swap_set_zero_pte(vma, addr, pte, entry);
 		mapped++;
 	}
 	if (mapped)
@@ -5999,6 +6069,13 @@ static vm_fault_t do_named_swap_fault(struct vm_fault *vmf)
 		if (unlikely(ret))
 			return ret;
 		if (!(vmf->flags & FAULT_FLAG_WRITE)) {
+			if (named_swap_pgoff_cached(vma, vmf->address)) {
+				ret = do_pte_missing(vmf);
+				trace_named_swap_vmf_fault(vmf,
+						NAMED_SWAP_FAULT_REFAULT,
+						0, 0, ret);
+				return ret;
+			}
 			ret = named_swap_read_zero(vmf);
 			trace_named_swap_vmf_fault(vmf,
 						   NAMED_SWAP_FAULT_MISSING_READ,

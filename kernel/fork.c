@@ -973,6 +973,21 @@ retry_named_swap:
 				goto fail_named_swap_vma;
 			}
 			named_swap_link(mpnt);
+			{
+				u64 orig_index = ~0ULL;
+
+				named_swap_file_index(orig_file, &orig_index);
+				named_swap_vma_log(mpnt, NS_VOP_FORK,
+						   mpnt->vm_start, orig_index,
+						   named_swap_file_size(orig_file),
+						   named_swap_file_size(mpnt->vm_file),
+						   0);
+				named_swap_vma_log(tmp, NS_VOP_FORK,
+						   tmp->vm_start, orig_index,
+						   named_swap_file_size(orig_file),
+						   named_swap_file_size(tmp->vm_file),
+						   1);
+			}
 
 			/*
 			 * Link the vma into the MT. After using __mt_dup(), memory

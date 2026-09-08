@@ -837,6 +837,7 @@ cannot_free:
  */
 long remove_mapping(struct address_space *mapping, struct folio *folio)
 {
+	named_swap_folio_off_lru(folio);
 	if (__remove_mapping(mapping, folio, false, NULL)) {
 		/*
 		 * Unfreezing the refcount with 1 effectively
@@ -5955,8 +5956,26 @@ void lru_gen_exit_memcg(struct mem_cgroup *memcg)
 		struct lruvec *lruvec = get_lruvec(memcg, nid);
 		struct lru_gen_mm_state *mm_state = get_mm_state(lruvec);
 
-		VM_WARN_ON_ONCE(memchr_inv(lruvec->lrugen.nr_pages, 0,
-					   sizeof(lruvec->lrugen.nr_pages)));
+		if (memchr_inv(lruvec->lrugen.nr_pages, 0,
+			       sizeof(lruvec->lrugen.nr_pages))) {
+			static const char *const tname[] = {
+				"anon", "file", "named"
+			};
+			int gen, type, zone;
+
+			pr_warn("lru_gen_exit_memcg leftover memcg=%u nid=%d\n",
+				mem_cgroup_id(memcg), nid);
+			for_each_gen_type_zone(gen, type, zone) {
+				long nr = lruvec->lrugen.nr_pages[gen][type][zone];
+
+				if (!nr)
+					continue;
+				pr_warn("  leftover gen=%d type=%s zone=%d nr=%ld\n",
+					gen, type < ARRAY_SIZE(tname) ?
+					tname[type] : "?", zone, nr);
+			}
+			VM_WARN_ON_ONCE(1);
+		}
 
 		lruvec->lrugen.list.next = LIST_POISON1;
 

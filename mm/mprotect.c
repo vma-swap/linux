@@ -683,13 +683,31 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
 
 	if (vma_is_named_swap(vma) && (oldflags & VM_ACCESS_FLAGS) &&
 	    !(newflags & VM_ACCESS_FLAGS)) {
-		/* Zap PTEs only. PROT_NONE does not shrink i_size. */
-		unmap_page_range(tlb, vma, start, end, NULL);
+		named_swap_vma_log(vma, NS_VOP_MPROTECT, start, newflags,
+				   oldflags, named_swap_file_size(vma->vm_file),
+				   0);
+		/*
+		 * Zap present PTEs but keep SWP_NAMED_SWAP so a later
+		 * mprotect(RW) refaults the folio instead of installing
+		 * the global zero page. PROT_NONE does not shrink i_size.
+		 */
+		{
+			struct zap_details details = {
+				.zap_flags = ZAP_FLAG_NAMED_SWAP_KEEP,
+			};
+
+			unmap_page_range(tlb, vma, start, end, &details);
+		}
 	} else {
 		change_protection(tlb, vma, start, end, mm_cp_flags);
 		if (vma_is_named_swap(vma) && !(oldflags & VM_ACCESS_FLAGS) &&
-		    (newflags & VM_ACCESS_FLAGS))
+		    (newflags & VM_ACCESS_FLAGS)) {
+			named_swap_vma_log(vma, NS_VOP_MPROTECT, start, newflags,
+					   oldflags,
+					   named_swap_file_size(vma->vm_file),
+					   0);
 			named_swap_allocate_vma(vma, start, end);
+		}
 	}
 
 	if ((oldflags & VM_ACCOUNT) && !(newflags & VM_ACCOUNT))

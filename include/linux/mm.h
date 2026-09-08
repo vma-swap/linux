@@ -1019,11 +1019,40 @@ extern int named_swap_min_vma_size;
 extern int named_swap_flush;
 extern int named_swap_debug;
 
-#define NAMED_SWAP_DBG_HIST	0x01	/* record enlarge/shrink ring */
+#define NAMED_SWAP_DBG_HIST	0x01	/* record VMA/file op rings */
 #define NAMED_SWAP_DBG_PRINT	0x02	/* printk every resize */
 #define NAMED_SWAP_DBG_SEGV	0x04	/* dump VMA+hist on user SIGSEGV */
 #define NAMED_SWAP_DBG_ASSERT	0x08	/* i_size / fault-past-EOF */
 #define NAMED_SWAP_DBG_STACK	0x10	/* dump_stack on each resize */
+
+/*
+ * Debug log of every named-swap VMA/file mutation. First five match
+ * enum named_swap_resize_op so resize hist_record can pass them through.
+ */
+enum named_swap_vma_op {
+	NS_VOP_ENLARGE = 0,
+	NS_VOP_SHRINK,
+	NS_VOP_DEALLOC,
+	NS_VOP_UNCOMMIT,
+	NS_VOP_ALLOC,
+	NS_VOP_FAULT_ZERO,
+	NS_VOP_FAULT_WRITE,
+	NS_VOP_FAULT_WP_ZERO,
+	NS_VOP_FAULT_WP_COW,
+	NS_VOP_FAULT_REFAULT,
+	NS_VOP_ZAP,
+	NS_VOP_MPROTECT,
+	NS_VOP_PUNCH,
+	NS_VOP_PUNCH_SKIP,
+	NS_VOP_TRUNCATE,
+	NS_VOP_FORK,
+	NS_VOP_SPLIT,
+	NS_VOP_CONVERT,
+	NS_VOP_UNMAP_PTE,
+	NS_VOP_ARTIFACT_PUNCH,
+	NS_VOP_DISCARD,
+};
+
 extern char named_swap_root[NAMED_SWAP_PATH_LEN];
 extern char named_swap_fs_root[NAMED_SWAP_PATH_LEN];
 extern char named_swap_device[NAMED_SWAP_PATH_LEN];
@@ -1060,6 +1089,7 @@ struct file *named_swap_prepare_mmap(unsigned long len, unsigned long *flag,
 int named_swap_uncommit(struct vm_area_struct *vma);
 void named_swap_uncommit_queue(struct vm_area_struct *vma);
 void named_swap_fs_flush(void);
+void named_swap_folio_off_lru(struct folio *folio);
 int named_swap_allocate_vma(struct vm_area_struct *vma,
 			    unsigned long start, unsigned long end);
 char *named_swap_file_path(struct file *file, char *buf, int buflen);
@@ -1076,7 +1106,8 @@ unsigned int named_swap_same_file_pte_count(struct vm_area_struct *vma,
 void setup_named_swap_vmf(struct vm_fault *vmf);
 loff_t named_swap_file_blocks(struct file *file);
 loff_t named_swap_file_size(struct file *file);
-int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta);
+int named_swap_enlarge(struct vm_area_struct *vma, unsigned long delta,
+		       bool commit);
 int named_swap_shrink(struct vm_area_struct *vma, unsigned long delta);
 int named_swap_deallocate(struct vm_area_struct *vma, unsigned long start,
 			  unsigned long end);
@@ -1085,12 +1116,20 @@ void named_swap_debug_user_segv(struct pt_regs *regs, unsigned long address,
 				struct vm_area_struct *vma);
 void named_swap_check_fault(struct vm_fault *vmf);
 int named_swap_hist_show(struct seq_file *m, void *v);
+void named_swap_vma_log(struct vm_area_struct *vma, unsigned int op,
+			unsigned long addr, unsigned long extra,
+			loff_t old_size, loff_t new_size, int ret);
+void named_swap_file_log(struct file *file, unsigned int op,
+			 unsigned long extra, loff_t old_size, loff_t new_size,
+			 int ret);
 void named_swap_note_written(struct vm_area_struct *vma, unsigned long addr);
-void named_swap_check_zero_read(struct vm_area_struct *vma, unsigned long addr);
+bool named_swap_check_zero_read(struct vm_area_struct *vma, unsigned long addr);
 void named_swap_drop_prepared_file(struct file *file);
 bool is_file_named_swap(struct file *file);
 void named_swap_store_pte(struct mm_struct *mm, struct vm_area_struct *vma,
 			  unsigned long address, pte_t *pte);
+void named_swap_discard_range(struct vm_area_struct *vma, unsigned long start,
+			      unsigned long end);
 int named_swap_convert_vma(struct vm_area_struct *vma, bool to_named_swap);
 
 static inline void vma_set_anonymous(struct vm_area_struct *vma)
@@ -2503,6 +2542,8 @@ struct zap_details {
 #define  ZAP_FLAG_DROP_MARKER        ((__force zap_flags_t) BIT(0))
 /* Set in unmap_vmas() to indicate a final unmap call.  Only used by hugetlb */
 #define  ZAP_FLAG_UNMAP              ((__force zap_flags_t) BIT(1))
+/* Named-swap PROT_NONE: replace present folios with SWP_NAMED_SWAP, do not drop those entries. */
+#define  ZAP_FLAG_NAMED_SWAP_KEEP    ((__force zap_flags_t) BIT(2))
 
 #ifdef CONFIG_SCHED_MM_CID
 void sched_mm_cid_before_execve(struct task_struct *t);

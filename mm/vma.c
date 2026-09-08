@@ -77,14 +77,20 @@ static inline bool is_mergeable_vma(struct vma_merge_struct *vmg, bool merge_nex
 	if ((vma->vm_flags ^ vmg->flags) & ~VM_SOFTDIRTY)
 		return false;
 	
-	/* 
-     * Standard VMAs must share the exact same file pointer.
-     * We only bypass this strict match if both are named swap files.
-     */
-    if (vma->vm_file != vmg->file) {
-        if (!is_file_named_swap(vma->vm_file) || !is_file_named_swap(vmg->file))
-            return false;
-    }
+	/*
+	 * File-backed VMAs merge only when they share the same struct file.
+	 * Named-swap is the one exception, and only for a *new* mmap
+	 * (vmg->vma == NULL): absorb it into the left neighbour and enlarge
+	 * that file. Two existing named-swap VMAs with different files must
+	 * not merge — vma_complete() would fput the survivor's file while
+	 * freeing the victim, which is the imbalanced-put on exit_mmap.
+	 */
+	if (vma->vm_file != vmg->file) {
+		if (vmg->vma ||
+		    !is_file_named_swap(vma->vm_file) ||
+		    !is_file_named_swap(vmg->file))
+			return false;
+	}
 
 	if (!is_mergeable_vm_userfaultfd_ctx(vma, vmg->uffd_ctx))
 		return false;
@@ -181,8 +187,15 @@ static bool can_vma_merge_after(struct vma_merge_struct *vmg)
 {
 	if (is_mergeable_vma(vmg, /* merge_next = */ false) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->prev->anon_vma, vmg->prev)) {
-		if ((vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff) ||
-			(is_file_named_swap(vmg->prev->vm_file) && is_file_named_swap(vmg->file)))
+		if (vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff)
+			return true;
+		/*
+		 * New named-swap mmap uses pgoff 0. Still merge left so
+		 * named_swap_enlarge() can grow the neighbour's file.
+		 */
+		if (!vmg->vma &&
+		    is_file_named_swap(vmg->prev->vm_file) &&
+		    is_file_named_swap(vmg->file))
 			return true;
 	}
 	return false;
@@ -346,9 +359,16 @@ static void vma_complete(struct vma_prepare *vp, struct vma_iterator *vmi,
 again:
 		vma_mark_detached(vp->remove, true);
 		if (vp->file) {
+			struct file *drop = vp->remove->vm_file;
+
 			uprobe_munmap(vp->remove, vp->remove->vm_start,
 				      vp->remove->vm_end);
-			fput(vp->file);
+			/*
+			 * Drop the VMA being removed. vp->file is the
+			 * survivor; they match for a normal same-file merge,
+			 * but must not be used if the files ever differ.
+			 */
+			fput(drop ? drop : vp->file);
 		}
 		if (vp->remove->anon_vma)
 			anon_vma_merge(vp->vma, vp->remove);
@@ -545,6 +565,11 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	/* vma_complete stores the new vma */
 	vma_complete(&vp, vmi, vma->vm_mm);
 	validate_mm(vma->vm_mm);
+
+	if (vma_is_named_swap(vma))
+		named_swap_vma_log(vma, NS_VOP_SPLIT, addr, new_below,
+				   named_swap_file_size(vma->vm_file),
+				   0, 0);
 
 	/* Success. */
 	if (new_below)
@@ -1024,6 +1049,16 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	can_merge_right = !just_expand && can_vma_merge_right(vmg, can_merge_left);
 
 	/*
+	 * A new mmap may merge left into a different named-swap file.
+	 * Merging right as well would delete next: that VMA's file is
+	 * not vp->file, and swallowing it also skips named_swap_enlarge
+	 * for next's length.
+	 */
+	if (can_merge_left && can_merge_right && prev && next &&
+	    prev->vm_file != next->vm_file)
+		can_merge_right = false;
+
+	/*
 	 * Raise i_size on the left named-swap file before touching the
 	 * iterator. named_swap_enlarge() can return -ENOSPC; the caller
 	 * then inserts a new VMA. Doing that after vma_prev() leaves mas
@@ -1031,7 +1066,8 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	 * VFS runs from named_swap_fs_flush() after mmap is dropped.
 	 */
 	if (can_merge_left && vma_is_named_swap(prev) &&
-	    named_swap_enlarge(prev, gap_len))
+	    named_swap_enlarge(prev, gap_len,
+			       !!(vmg->flags & VM_ACCESS_FLAGS)))
 		can_merge_left = false;
 
 	/* If we can merge with the next VMA, adjust vmg accordingly. */
@@ -1825,7 +1861,9 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 			loff_t need = ((loff_t)pgoff << PAGE_SHIFT) + len;
 			loff_t isz = named_swap_file_size(vma->vm_file);
 
-			if (need > isz && named_swap_enlarge(vma, need - isz))
+			if (need > isz &&
+			    named_swap_enlarge(vma, need - isz,
+					       !!(vma->vm_flags & VM_ACCESS_FLAGS)))
 				goto out;
 		}
 		new_vma = vm_area_dup(vma);
@@ -3003,7 +3041,8 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	if (vma_is_named_swap_growsdown(vma) && address < vma->vm_start) {
 		unsigned long ns_grow = (vma->vm_start - address) >> PAGE_SHIFT;
 
-		error = named_swap_enlarge(vma, ns_grow << PAGE_SHIFT);
+		error = named_swap_enlarge(vma, ns_grow << PAGE_SHIFT,
+					   !!(vma->vm_flags & VM_ACCESS_FLAGS));
 		if (error) {
 			pr_warn_ratelimited(
 				"named_swap: growsdown enlarge failed err=%d grow=%lu\n",

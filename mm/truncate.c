@@ -560,6 +560,8 @@ int folio_unmap_invalidate(struct address_space *mapping, struct folio *folio,
 	if (!filemap_release_folio(folio, gfp))
 		return -EBUSY;
 
+	named_swap_folio_off_lru(folio);
+
 	spin_lock(&mapping->host->i_lock);
 	xa_lock_irq(&mapping->i_pages);
 	if (folio_test_dirty(folio))
@@ -577,6 +579,12 @@ int folio_unmap_invalidate(struct address_space *mapping, struct folio *folio,
 failed:
 	xa_unlock_irq(&mapping->i_pages);
 	spin_unlock(&mapping->host->i_lock);
+	/*
+	 * Took the folio off MGLRU before i_pages. Put it back so a
+	 * dirty retry does not leak a page-cache folio off the LRU.
+	 */
+	if (!folio_test_lru(folio))
+		folio_add_lru(folio);
 	return -EBUSY;
 }
 

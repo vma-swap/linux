@@ -858,6 +858,8 @@ static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 	};
 
 	zap_page_range_single(vma, start, end - start, &details);
+	if (vma_is_named_swap(vma))
+		named_swap_discard_range(vma, start, end);
 	return 0;
 }
 
