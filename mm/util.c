@@ -575,7 +575,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 	if (!ret)
 		ret = fsnotify_mmap_perm(file, prot, pgoff >> PAGE_SHIFT, len);
 	if (!ret) {
-		if (!file) {
+		if (!file&& (flag & MAP_NAMED_SWAP)) {
 			file = named_swap_prepare_mmap(len, &flag,
 				!!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC)));
 			named_swap_file = file;

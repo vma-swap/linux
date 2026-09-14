@@ -56,6 +56,10 @@
 #include <linux/bitmap.h>
 #include <linux/sched/mm.h>
 #include "internal.h"
+#include <linux/kthread.h>
+#include <linux/wait.h>
+#include <linux/mutex.h>
+#include <linux/syscalls.h>
 
 /*
  * Facade struct file (named_swap_fops) over a real backing file on disk.
@@ -63,17 +67,35 @@
  */
 struct named_swap_file {
 	struct file *lower;
+	struct file *wrapper;
 	spinlock_t bind_lock;
 	u64 index;
 	unsigned long nr_pages;
 	enum named_swap_storage_pool pool;
 	bool artifact;
+	atomic_long_t mapped_pages;
+	struct list_head list;
 };
 
 static DEFINE_XARRAY(named_swap_files);
 static DEFINE_MUTEX(named_swap_xa_lock);
 
+/* Global state for the background cleaner daemon */
+static DECLARE_WAIT_QUEUE_HEAD(named_swap_cleaner_waitq);
+static struct task_struct *named_swap_cleaner_task = NULL;
+static atomic_t knswap_daemon_wakeup = ATOMIC_INIT(0);
+
+int start_waste_clean(void);
+/* The threshold of wasted pages to trigger a cleanup */
+#define NAMED_SWAP_CLEAN_THRESHOLD 1024
+
+
+
 static struct file *named_swap_file_peek(u64 index);
+
+static unsigned long named_swap_global_waste_pages(void);
+static void named_swap_check_waste(void);
+int knswap_daemon_start(void);
 
 static struct file *named_swap_lower(struct file *file)
 {
@@ -98,6 +120,14 @@ char *named_swap_file_path(struct file *file, char *buf, int buflen)
 	return file_path(ns->lower, buf, buflen);
 }
 EXPORT_SYMBOL_GPL(named_swap_file_path);
+
+static void knswap_daemon_wake(void)
+{
+    atomic_set(&knswap_daemon_wakeup, 1);
+    wake_up_interruptible(&named_swap_cleaner_waitq);
+}
+
+
 
 /* Indices are stored in the swap PTE offset field (see swp_offset()). */
 #define NAMED_SWAP_INDEX_MAX	SWP_OFFSET_MASK
@@ -155,6 +185,113 @@ struct named_swap_readdir {
 	unsigned int type;
 	bool found;
 };
+/* 
+ * Updates the mapped pages counter from the rmap subsystem.
+ * Called whenever a page is mapped or unmapped to/from a named_swap VMA.
+ * waste = allocated disk pages - mapped pages
+ */
+void named_swap_update_mapped_pages(struct file *file, int delta)
+{
+    struct named_swap_file *ns;
+
+    if (!file || !is_file_named_swap(file))
+        return;
+
+    ns = file->private_data;
+    if (!ns)
+        return;
+
+    atomic_long_add(delta, &ns->mapped_pages);
+
+}
+EXPORT_SYMBOL_GPL(named_swap_update_mapped_pages);
+
+
+/* 
+ * Returns the actual number of physical pages (RAM) currently allocated 
+ * and mapped to this named_swap file.
+ */
+long named_swap_get_nr_pages(struct file *file)
+{
+	struct named_swap_file *ns;
+
+	if (!file || !is_file_named_swap(file))
+		return 0;
+
+	ns = file->private_data;
+	if (!ns)
+		return 0;
+
+	return atomic_long_read(&ns->mapped_pages);
+}
+EXPORT_SYMBOL_GPL(named_swap_get_nr_pages);
+
+/* 
+ * Returns the actual number of blocks (disk space) currently allocated 
+ * by the underlying filesystem for this named_swap file.
+ */
+long named_swap_get_nr_block(struct file *file)
+{
+	struct file *lower;
+
+	if (!file || !is_file_named_swap(file))
+		return 0;
+
+	lower = named_swap_lower(file);
+	if (!lower)
+		return 0;
+
+	/* i_blocks is automatically managed by the VFS in 512-byte sectors */
+	return file_inode(lower)->i_blocks;
+}
+EXPORT_SYMBOL_GPL(named_swap_get_nr_block);
+static LIST_HEAD(named_swap_active_list);
+static DEFINE_MUTEX(name_swap_mutex);
+static DEFINE_MUTEX(named_swap_waste_clean_lock); //we dont want multiple cleaners running at the same time- deamon and syscall
+/* 
+ * Finds the named_swap file with the largest difference between 
+ * allocated disk blocks and actually mapped physical pages (RAM).
+ * This file is the best candidate for swap eviction or shrinking.
+ */
+struct file *named_swap_get_eviction_candidate(void)
+{
+	struct named_swap_file *ns;
+	struct file *best_file = NULL;
+	long max_diff = 0;
+
+	mutex_lock(&name_swap_mutex);
+	
+	list_for_each_entry(ns, &named_swap_active_list, list) {
+		if (!ns->lower || ns->artifact)
+        continue;
+		long pages = atomic_long_read(&ns->mapped_pages);
+		long blocks = file_inode(ns->lower)->i_blocks;
+		
+		/* Convert blocks (512 bytes) to pages (usually 4096 bytes) */
+		long blocks_in_pages = blocks >> (PAGE_SHIFT - 9);
+		
+		/* 
+		 * Calculate the difference. 
+		 * High number of disk blocks but low number of RAM pages 
+		 * makes it an ideal candidate for eviction.
+		 */
+		long diff = blocks_in_pages - pages; 
+		
+		if (diff > max_diff) {
+			max_diff = diff;
+			best_file = ns->wrapper;
+		}
+	}
+	
+	/* Take a reference on the file to prevent it from being freed */
+	if (best_file)
+		get_file(best_file);
+		
+	mutex_unlock(&name_swap_mutex);
+	
+	return best_file;
+}
+EXPORT_SYMBOL_GPL(named_swap_get_eviction_candidate);
 
 static struct file *named_swap_file_peek(u64 index)
 {
@@ -382,8 +519,10 @@ static long named_swap_fallocate_lower_gfp(struct file *lower, int mode,
 	if (start_write)
 		file_start_write(lower);
 	ret = lower->f_op->fallocate(lower, mode, offset, len);
-	if (!ret)
+	if (!ret){
 		fsnotify_modify(lower);
+		named_swap_check_waste();
+	}
 	if (start_write)
 		file_end_write(lower);
 	revert_creds(old);
@@ -641,7 +780,7 @@ int named_swap_uncommit(struct vm_area_struct *vma)
 	if (err)
 		pr_warn_ratelimited("named_swap: failed to %s (err=%d).\n",
 				    vma_end_offset == file_size ? "shrink" : "punch hole",
-				    err);
+					err);			
 	return err;
 }
 
@@ -956,14 +1095,7 @@ void named_swap_artifact_file(struct file *file, struct mm_struct *only_mm)
 	anon_vma = mapping->anon_vma;
 	if (!anon_vma)
 		return;
-
-	anon_vma_lock_read(anon_vma);
-	if (anon_vma->num_active_vmas) {
-		anon_vma_unlock_read(anon_vma);
-		return;
-	}
-	anon_vma_unlock_read(anon_vma);
-
+	
 	spin_lock(&ns->bind_lock);
 	if (ns->artifact) {
 		spin_unlock(&ns->bind_lock);
@@ -1276,6 +1408,9 @@ static int named_swap_release(struct inode *inode, struct file *file)
 		fput(lower);
 		ns->lower = NULL;
 	}
+	mutex_lock(&name_swap_mutex);
+	list_del(&ns->list);
+	mutex_unlock(&name_swap_mutex);
 
 	kfree(ns);
 	file->private_data = NULL;
@@ -1610,6 +1745,8 @@ static struct file *named_swap_create_file(unsigned long len, bool allocate)
 	ns->index = index;
 	ns->pool = pool;
 	ns->nr_pages = pages;
+	atomic_long_set(&ns->mapped_pages, 0);
+
 
 	file = anon_inode_create_getfile("[named_swap]", &named_swap_fops, ns,
 				  O_RDWR | O_LARGEFILE, NULL);
@@ -1618,6 +1755,11 @@ static struct file *named_swap_create_file(unsigned long len, bool allocate)
 		kfree(ns);
 		goto out;
 	}
+	ns->wrapper = file;
+	mutex_lock(&name_swap_mutex);
+	list_add_tail(&ns->list, &named_swap_active_list);
+	mutex_unlock(&name_swap_mutex);
+
 	/* named_swap_release() now owns the reservation. */
 	reserved = false;
 	inode = file_inode(file);
@@ -2450,3 +2592,122 @@ int named_swap_convert_vma(struct vm_area_struct *vma, bool to_named_swap)
 }
 EXPORT_SYMBOL_GPL(named_swap_convert_vma);
 
+/*
+ * Calculate the total waste across all active named_swap files.
+ * Waste is defined as physical disk blocks allocated minus pages actually mapped.
+ */
+static unsigned long named_swap_global_waste_pages(void)
+{
+	struct named_swap_file *ns;
+	unsigned long total = 0;
+
+	/* Lock the active list while traversing to prevent concurrent modifications */
+	 mutex_lock(&name_swap_mutex);
+	
+	list_for_each_entry(ns, &named_swap_active_list, list) {
+		long mapped;
+		unsigned long blocks;
+		unsigned long blocks_in_pages;
+
+		if (!ns->lower)
+			continue;
+
+		mapped = atomic_long_read(&ns->mapped_pages);
+		blocks = file_inode(ns->lower)->i_blocks;
+		
+		/* Convert 512-byte blocks into system page size units */
+		blocks_in_pages = blocks >> (PAGE_SHIFT - 9);
+
+		if (blocks_in_pages > mapped)
+			total += blocks_in_pages - mapped;
+	}
+	
+	mutex_unlock(&name_swap_mutex);
+	return total;
+}
+int start_waste_clean(void)
+{
+    mutex_lock(&named_swap_waste_clean_lock);
+
+    while (1) {
+        struct file *file;
+        unsigned long waste_before;
+        unsigned long waste_after;
+
+        waste_before = named_swap_global_waste_pages();
+
+        if (waste_before <= NAMED_SWAP_CLEAN_THRESHOLD)
+            break;
+
+        file = named_swap_get_eviction_candidate();
+        if (!file)
+            break;
+
+        named_swap_artifact_file(file, NULL);
+        fput(file);
+
+        waste_after = named_swap_global_waste_pages();
+
+        if (waste_after >= waste_before)
+            break;
+    }
+
+    mutex_unlock(&named_swap_waste_clean_lock);
+
+    return 0;
+}
+
+SYSCALL_DEFINE0(start_waste_clean)
+{
+    return start_waste_clean();
+}
+
+
+static int knswap_daemon_main(void *data)
+{
+    while (!kthread_should_stop()) {
+        wait_event_interruptible(
+            named_swap_cleaner_waitq,
+            kthread_should_stop() ||
+            atomic_read(&knswap_daemon_wakeup));
+
+        if (kthread_should_stop())
+            break;
+
+        atomic_set(&knswap_daemon_wakeup, 0);
+
+        start_waste_clean();
+    }
+
+    return 0;
+}
+
+/*
+ * Create and start the named-swap daemon.
+ */
+int knswap_daemon_start(void)
+{
+    if (named_swap_cleaner_task)
+        return 0;
+
+    /* Create and start the daemon thread. */
+    named_swap_cleaner_task = kthread_run(knswap_daemon_main,
+                                          NULL, "knswap_daemon");
+
+    if (IS_ERR(named_swap_cleaner_task)) {
+        int err = PTR_ERR(named_swap_cleaner_task);
+
+        named_swap_cleaner_task = NULL;
+        return err;
+    }
+
+    return 0;
+}
+EXPORT_SYMBOL_GPL(knswap_daemon_start);
+
+static void named_swap_check_waste(void)
+{
+    if (named_swap_global_waste_pages() >
+        NAMED_SWAP_CLEAN_THRESHOLD)
+        knswap_daemon_wake();
+}

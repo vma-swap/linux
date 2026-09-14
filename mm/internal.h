@@ -1545,6 +1545,12 @@ static inline void accept_page(struct page *page)
 }
 #endif /* CONFIG_UNACCEPTED_MEMORY */
 
+/* Named Swap Metadata Helpers */
+extern void named_swap_update_mapped_pages(struct file *file, int delta);
+extern long named_swap_get_nr_pages(struct file *file);
+extern long named_swap_get_nr_block(struct file *file);
+extern struct file *named_swap_get_eviction_candidate(void);
+
 /* pagewalk.c */
 int walk_page_range_mm(struct mm_struct *mm, unsigned long start,
 		unsigned long end, const struct mm_walk_ops *ops,
