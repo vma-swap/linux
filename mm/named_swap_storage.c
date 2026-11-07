@@ -44,6 +44,8 @@ EXPORT_SYMBOL_GPL(named_swap_fs_free);
 int named_swap_freerun;
 EXPORT_SYMBOL_GPL(named_swap_freerun);
 
+extern int knswap_daemon_start(void);
+
 static char named_swap_mode_name[16];
 static bool named_swap_mode_explicit;
 static enum named_swap_storage_mode named_swap_mode_parsed;
@@ -617,6 +619,7 @@ int named_swap_storage_setup(void)
 			named_swap_root : "(n/a)",
 		pool_used_by_mode(mode, NAMED_SWAP_POOL_FS) ?
 			named_swap_fs_root : "(n/a)");
+	knswap_daemon_start();		
 	ret = 0;
 	goto out;
 

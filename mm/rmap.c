@@ -1635,6 +1635,9 @@ static __always_inline void __folio_add_anon_rmap(struct folio *folio,
 		__page_check_anon_rmap(folio, page, vma, address);
 
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
+	/* Update mapped pages counter for named_swap */
+	if (vma_is_named_swap(vma))
+		named_swap_update_mapped_pages(vma->vm_file, nr_pages);
 
 	if (flags & RMAP_EXCLUSIVE) {
 		switch (level) {
@@ -1783,6 +1786,9 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
 	mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
+	/* Update mapped pages counter for new anonymous named_swap pages */
+	if (vma_is_named_swap(vma))
+		named_swap_update_mapped_pages(vma->vm_file, nr);
 }
 
 static __always_inline void __folio_add_file_rmap(struct folio *folio,
@@ -1795,6 +1801,9 @@ static __always_inline void __folio_add_file_rmap(struct folio *folio,
 
 	nr = __folio_add_rmap(folio, page, nr_pages, level, &nr_pmdmapped);
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
+	/* Update mapped pages counter for named_swap */
+	if (vma_is_named_swap(vma))
+		named_swap_update_mapped_pages(vma->vm_file, nr_pages);
 
 	/* See comments in folio_add_anon_rmap_*() */
 	if (!folio_test_large(folio))
@@ -1898,6 +1907,10 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 		deferred_split_folio(folio, true);
 
 	__folio_mod_stat(folio, -nr, -nr_pmdmapped);
+	/* Update mapped pages counter for named_swap (decrement) */
+	const int orig_nr_pages = nr_pages;
+	if (vma_is_named_swap(vma))
+		named_swap_update_mapped_pages(vma->vm_file, -orig_nr_pages);
 
 	/*
 	 * It would be tidy to reset folio_test_anon mapping when fully
